@@ -89,37 +89,28 @@ def get_chayei_links(filename='data/Chayei_Moharan.json'):
             print(f"Section {sec_num}: No link found.")
     return links
 
-                    siman_pattern = r'(?:\b(\S*תִנְיָנָא)\s+)?(סִימָן\s*(\([^)]+\)|[\u0590-\u05FF"׳״]+))'
-                    for match in re.finditer(siman_pattern, line):
-                        book_number = 2 if match.group(1) else 1
-                        siman_full = match.group(2)
-                        para_number = match.group(3)
-                        para_clean = para_number.replace('(', '').replace(')', '').strip()
-                        para_numerical = hebrew_gematria(para_clean)
-                        # Find snippet around the specific match
-                        # Get character indices of the match
-                        match_start, match_end = match.span(2)
-                        # Get words and their character positions
-                        words = line.split()
-                        char_indices = []
-                        idx = 0
-                        for w in words:
-                            char_indices.append(idx)
-                            idx += len(w) + 1  # +1 for the space
-                        # Find the word index where the match starts
-                        match_word_start = 0
-                        for i, cidx in enumerate(char_indices):
-                            if cidx >= match_start:
-                                match_word_start = i
-                                break
-                        match_word_end = match_word_start + len(siman_full.split())
-                        snippet_start = max(0, match_word_start - 10)
-                        snippet_end = min(len(words), match_word_end + 10)
-                        snippet = ' '.join(words[snippet_start:snippet_end])
-                        links.append({
-                            'original_paragraph': str(sec_num),
-                            'book_number': book_number,
-                            'para_number': para_number,
-                            'para_numerical': para_numerical,
-                            'snippet': snippet
-                        })
+
+def main():
+    parser = argparse.ArgumentParser(description="Extract Chayei Moharan links and export to CSV.")
+    parser.add_argument('--output-file', type=str, required=False, default='data/likutei-chayei-links.csv', help='Output CSV file path')
+    parser.add_argument('--input-file', type=str, default='data/Chayei_Moharan.json', help='Input JSON file path')
+    args = parser.parse_args()
+
+    links = get_chayei_links(args.input_file)
+
+    with open(args.output_file, 'w', newline='', encoding='utf-8') as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow(['Ref1', 'Ref2', 'Ref1_snipette'])
+        for l in links:
+            
+            ref1 = f"Chayei_Moharan {l['original_paragraph']}"
+            if l['book_number'] == 1:
+                ref2 = f"Likutei_Moharan {l['para_numerical']}"
+            else:
+                ref2 = f"Likutei_Moharan%2C_Part_II {l['para_numerical']}"
+            snippet = l.get('snippet', '')
+            writer.writerow([ref1, ref2, snippet])
+
+
+if __name__ == "__main__":
+    main()
