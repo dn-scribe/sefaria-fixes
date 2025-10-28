@@ -1,0 +1,30 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Pull book",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "pull-book.py",
+            "console": "internalConsole",
+            "args": ["--book_name", "Chayei_Moharan"]
+        },
+        {
+            "name": "Generate CVS for Likutei Moharan Links",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "link-likutei-chayei.py",
+            "console": "internalConsole",
+        },
+        {
+            "name": "Python Debugger: Current File",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "console": "internalConsole"
+        }
+    ]
+}
