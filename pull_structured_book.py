@@ -16,25 +16,39 @@ class SefariaBookStructure:
         response = requests.get(url)
         response.raise_for_status()
         self.structure = response.json()
+        # Always save structure after fetching
+        structure_path = f"data/{self.book_title.replace(' ', '_')}_structure.json"
+        with open(structure_path, "w", encoding="utf-8") as f:
+            json.dump(self.structure, f, ensure_ascii=False, indent=2)
         return self.structure
 
-    def generate_refs(self, max_refs=None):
+    def generate_refs(self, max_refs=None, language="he"):
         if not self.structure:
             self.fetch_structure()
         refs = {}
         title = self.structure.get("title")
         schema = self.structure.get("schema", {})
+        if not schema:
+            print("Warning: No schema found in structure. Check the book's index API response.")
+            return refs
         section_count = [0]  # mutable counter for top-level sections
 
         def get_text_length(ref):
             url = f"https://www.sefaria.org/api/texts/{ref.replace(' ', '_')}?context=0"
+            print(f"  [API] Fetching: {url}")
             try:
                 response = requests.get(url)
                 response.raise_for_status()
                 data = response.json()
-                text = data.get("he", [])
+                if language == "en":
+                    text = data.get("text", [])
+                else:
+                    text = data.get("he", [])
+                if not text:
+                    print(f"  [WARN] No text found for ref: {ref} (language: {language})")
                 return text
-            except Exception:
+            except Exception as e:
+                print(f"  [ERROR] Exception fetching {url}: {e}")
                 return []
 
         def get_section_key(node):
@@ -112,12 +126,14 @@ class SefariaBookStructure:
         print("Starting schema traversal...")
         traverse(schema, [], 0, None, max_refs, section_count)
         print("Finished schema traversal.")
+        if not refs:
+            print("Warning: No refs generated. The book may have an unexpected schema or no content.")
         return refs
         with open(filename, "w", encoding="utf-8") as f:
             json.dump(self.structure, f, ensure_ascii=False, indent=2)
 
-    def save_refs_json(self, filename, max_refs=None):
-        refs = self.generate_refs(max_refs=max_refs)
+    def save_refs_json(self, filename, max_refs=None, language="he"):
+        refs = self.generate_refs(max_refs=max_refs, language=language)
         # Remove empty entries recursively
         def remove_empty(d):
             if isinstance(d, dict):
@@ -135,6 +151,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Pull Sefaria book structure and refs.")
     parser.add_argument("book_title", type=str, help="Book title (e.g. 'Likutei Halakhot')")
     parser.add_argument("--num", type=int, default=0, help="Number of refs to process (0 means all)")
+    parser.add_argument("--language", type=str, choices=["he", "en"], default="he", help="Text language: 'he' for Hebrew, 'en' for English (default: he)")
     args = parser.parse_args()
     import os
     data_dir = "data"
@@ -143,6 +160,6 @@ if __name__ == "__main__":
     refs_path = os.path.join(data_dir, f"{args.book_title.replace(' ', '_')}_refs.json")
     sbs = SefariaBookStructure(args.book_title)
     sbs.save_structure_json(structure_path)
-    sbs.save_refs_json(refs_path, max_refs=(args.num if args.num > 0 else None))
+    sbs.save_refs_json(refs_path, max_refs=(args.num if args.num > 0 else None), language=args.language)
     if args.num > 0:
         print(f"Saved structure and up to {args.num} refs for {args.book_title} in {data_dir}/")

@@ -44,7 +44,15 @@
                 "request": "launch",
                 "program": "pull_structured_book.py",
                 "console": "internalConsole",
-                "args": ["Likutei Halakhot"]
+                "args": ["Likutei Halakhot", "--num", "5"]
+            },
+            {
+                "name": "Pull structured Faith_in_the_Future",
+                "type": "debugpy",
+                "request": "launch",
+                "program": "pull_structured_book.py",
+                "console": "internalConsole",
+                "args": ["Faith in the Future", "--language", "en"]
             }
     ]
 }
