@@ -40,35 +40,49 @@ class SefariaBookStructure:
             except Exception:
                 return []
 
+
         def traverse(node, ref_path, depth=0):
             if max_refs is not None and ref_count[0] >= max_refs:
                 return
-            if node.get("nodeType") == "JaggedArrayNode" and not node.get("nodes"):
-                hierarchy = ref_path + [node.get("title", "")]
-                ref_prefix = "%2C ".join([h for h in hierarchy if h]).strip()
+            # Only add to ref_path if node has a title
+            next_ref_path = ref_path
+            if node.get("title"):
+                next_ref_path = ref_path + [node["title"]]
+
+            # Always recurse into children if 'nodes' is present
+            if "nodes" in node and node["nodes"]:
+                for child in node["nodes"]:
+                    traverse(child, next_ref_path, depth+1)
+            # Only fetch text for true leaf JaggedArrayNodes (no 'nodes')
+            elif node.get("nodeType") == "JaggedArrayNode":
+                ref_prefix = "%2C ".join([h for h in next_ref_path if h]).strip()
                 print(f"Fetching: {ref_prefix}")
                 before_count = ref_count[0]
-                def build_refs(indices, current_depth, text_segment):
+                def build_refs(indices, text_segment, depth, max_depth):
                     if max_refs is not None and ref_count[0] >= max_refs:
                         return
-                    # If text_segment is a string, it's a leaf: add ref
-                    if isinstance(text_segment, str):
+                    # If at leaf depth, but text_segment is a list of strings, keep the list as the value
+                    if depth == max_depth:
                         ref_str = f"{ref_prefix}.{'.'.join(str(x) for x in indices)}".strip()
                         refs[ref_str] = text_segment
                         ref_count[0] += 1
                         return
-                    # If text_segment is a list, descend recursively
+                    # If text_segment is a list of strings (not further nested), keep the list as the value
+                    if isinstance(text_segment, list) and all(isinstance(x, str) for x in text_segment):
+                        ref_str = f"{ref_prefix}.{'.'.join(str(x) for x in indices)}".strip()
+                        refs[ref_str] = text_segment
+                        ref_count[0] += 1
+                        return
+                    # Otherwise, recurse into sublists
                     if isinstance(text_segment, list):
                         for i, sub_segment in enumerate(text_segment, 1):
-                            build_refs(indices + [i], current_depth + 1, sub_segment)
+                            build_refs(indices + [i], sub_segment, depth + 1, max_depth)
+
+                jagged_depth = node.get("depth", 1)
                 text = get_text_length(ref_prefix)
-                build_refs([], 0, text)
+                build_refs([], text, 0, jagged_depth)
                 added = ref_count[0] - before_count
                 print(f"Added {added} refs for {ref_prefix}. Total so far: {ref_count[0]}")
-            elif "nodes" in node:
-                for child in node["nodes"]:
-                    # Pass down the hierarchy for ref prefix
-                    traverse(child, ref_path + [node.get("title", "")], depth+1)
 
         traverse(schema, [], 0)
         return refs

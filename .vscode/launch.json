@@ -10,7 +10,7 @@
             "request": "launch",
             "program": "pull-book.py",
             "console": "internalConsole",
-            "args": ["--book_name", "Chayei_Moharan"]
+            "args": ["--book_name", "Likutei_Halakhot"]
         },
         {
             "name": "Generate CVS for Likutei Moharan Links",
@@ -20,11 +20,31 @@
             "console": "internalConsole",
         },
         {
+            "name": "Generate CSV for Likutei Halakhot Links",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "link-likutei-halakhot.py",
+            "console": "internalConsole",
+            "args": [
+                "--refs-json", "data/Likutei_Halakhot_refs.json",
+                "--output-csv", "data/likutei-halakhot-links.csv"
+            ]
+        },
+        {
             "name": "Python Debugger: Current File",
             "type": "debugpy",
             "request": "launch",
             "program": "${file}",
             "console": "internalConsole"
         }
+            ,
+            {
+                "name": "Pull structured Likutei Halakhot",
+                "type": "debugpy",
+                "request": "launch",
+                "program": "pull_structured_book.py",
+                "console": "internalConsole",
+                "args": ["Likutei Halakhot"]
+            }
     ]
 }
