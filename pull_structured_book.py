@@ -2,19 +2,16 @@ import requests
 import json
 
 class SefariaBookStructure:
+    def save_structure_json(self, filename):
+        with open(filename, "w", encoding="utf-8") as f:
+            json.dump(self.structure, f, ensure_ascii=False, indent=2)
     BASE_URL = "https://www.sefaria.org/api/v2/index/"
 
     def __init__(self, book_title):
         self.book_title = book_title
         self.structure = None
 
-    def fetch_structure(self, structure_path=None):
-        import os
-        if structure_path and os.path.exists(structure_path):
-            with open(structure_path, "r", encoding="utf-8") as f:
-                self.structure = json.load(f)
-            print(f"Loaded structure from {structure_path}")
-            return self.structure
+    def fetch_structure(self):
         url = f"{self.BASE_URL}{self.book_title.replace(' ', '_')}"
         response = requests.get(url)
         response.raise_for_status()
@@ -27,7 +24,7 @@ class SefariaBookStructure:
         refs = {}
         title = self.structure.get("title")
         schema = self.structure.get("schema", {})
-        ref_count = [0]  # mutable counter
+        section_count = [0]  # mutable counter for top-level sections
 
         def get_text_length(ref):
             url = f"https://www.sefaria.org/api/texts/{ref.replace(' ', '_')}?context=0"
@@ -40,66 +37,98 @@ class SefariaBookStructure:
             except Exception:
                 return []
 
+        def get_section_key(node):
+            return node.get("title") or node.get("key")
 
-        def traverse(node, ref_path, depth=0):
-            if max_refs is not None and ref_count[0] >= max_refs:
+        def build_hierarchy(section_names, text_segment, depth=0, parent_keys=None):
+            if parent_keys is None:
+                parent_keys = []
+            if depth >= len(section_names):
+                # Log paragraph fetch
+                if isinstance(text_segment, list):
+                    print(f"  Paragraphs: {len(text_segment)}")
+                return text_segment
+            if isinstance(text_segment, list):
+                result = {}
+                for i, sub_segment in enumerate(text_segment, 1):
+                    key = str(i)
+                    current_keys = parent_keys + [key]
+                    print(f"    {section_names[depth]} {key}")
+                    result[key] = build_hierarchy(section_names, sub_segment, depth + 1, current_keys)
+                return result
+            return text_segment
+
+        def set_nested(refs, keys, value):
+            d = refs
+            for k in keys[:-1]:
+                if k not in d:
+                    d[k] = {}
+                d = d[k]
+            d[keys[-1]] = value
+
+        def traverse(node, ref_path, depth=0, parent_section_names=None, max_refs=None, section_count=None):
+            if section_count is None:
+                section_count = [0]
+            # Limit number of top-level sections (first level under root)
+            if depth == 1 and max_refs is not None and section_count[0] >= max_refs:
                 return
-            # Only add to ref_path if node has a title
             next_ref_path = ref_path
             if node.get("title"):
                 next_ref_path = ref_path + [node["title"]]
 
-            # Always recurse into children if 'nodes' is present
+            section_names = node.get("sectionNames") or parent_section_names or []
+
+            if node.get("nodeType") == "JaggedArrayNode" and not node.get("nodes"):
+                jagged_depth = node.get("depth", 1)
+                ref_prefix = "%2C ".join([h for h in next_ref_path if h]).strip()
+                print(f"Section: {' > '.join(next_ref_path)} (depth {jagged_depth})")
+                if depth == 1:
+                    section_count[0] += 1
+                if jagged_depth > 1:
+                    base_text = get_text_length(ref_prefix)
+                    num_chapters = len(base_text) if isinstance(base_text, list) else 0
+                    chapters_dict = {}
+                    for chapter_num in range(1, num_chapters + 1):
+                        chapter_ref = f"{ref_prefix} {chapter_num}"
+                        print(f"  Fetching chapter {chapter_num} for section: {ref_prefix}")
+                        chapter_text = get_text_length(chapter_ref)
+                        chapter_hierarchy = build_hierarchy(section_names[1:], chapter_text, 0)
+                        chapters_dict[str(chapter_num)] = chapter_hierarchy
+                    set_nested(refs, next_ref_path, chapters_dict)
+                else:
+                    print(f"  Fetching paragraphs for section: {ref_prefix}")
+                    text = get_text_length(ref_prefix)
+                    nested = build_hierarchy(section_names, text, 0)
+                    set_nested(refs, next_ref_path, nested)
+                return
+
             if "nodes" in node and node["nodes"]:
                 for child in node["nodes"]:
-                    traverse(child, next_ref_path, depth+1)
-            # Only fetch text for true leaf JaggedArrayNodes (no 'nodes')
-            elif node.get("nodeType") == "JaggedArrayNode":
-                ref_prefix = "%2C ".join([h for h in next_ref_path if h]).strip()
-                print(f"Fetching: {ref_prefix}")
-                before_count = ref_count[0]
-                def build_refs(indices, text_segment, depth, max_depth):
-                    if max_refs is not None and ref_count[0] >= max_refs:
-                        return
-                    # If at leaf depth, but text_segment is a list of strings, keep the list as the value
-                    if depth == max_depth:
-                        ref_str = f"{ref_prefix}.{'.'.join(str(x) for x in indices)}".strip()
-                        refs[ref_str] = text_segment
-                        ref_count[0] += 1
-                        return
-                    # If text_segment is a list of strings (not further nested), keep the list as the value
-                    if isinstance(text_segment, list) and all(isinstance(x, str) for x in text_segment):
-                        ref_str = f"{ref_prefix}.{'.'.join(str(x) for x in indices)}".strip()
-                        refs[ref_str] = text_segment
-                        ref_count[0] += 1
-                        return
-                    # Otherwise, recurse into sublists
-                    if isinstance(text_segment, list):
-                        for i, sub_segment in enumerate(text_segment, 1):
-                            build_refs(indices + [i], sub_segment, depth + 1, max_depth)
+                    # Only count top-level sections
+                    if depth == 0 and max_refs is not None and section_count[0] >= max_refs:
+                        break
+                    traverse(child, next_ref_path, depth+1, section_names, max_refs, section_count)
 
-                jagged_depth = node.get("depth", 1)
-                text = get_text_length(ref_prefix)
-                build_refs([], text, 0, jagged_depth)
-                added = ref_count[0] - before_count
-                print(f"Added {added} refs for {ref_prefix}. Total so far: {ref_count[0]}")
-
-        traverse(schema, [], 0)
+        print("Starting schema traversal...")
+        traverse(schema, [], 0, None, max_refs, section_count)
+        print("Finished schema traversal.")
         return refs
-
-    def save_structure_json(self, filename):
-        import os
-        if not self.structure:
-            self.fetch_structure(structure_path=filename)
-        if not os.path.exists(filename):
-            with open(filename, "w", encoding="utf-8") as f:
-                json.dump(self.structure, f, ensure_ascii=False, indent=2)
+        with open(filename, "w", encoding="utf-8") as f:
+            json.dump(self.structure, f, ensure_ascii=False, indent=2)
 
     def save_refs_json(self, filename, max_refs=None):
         refs = self.generate_refs(max_refs=max_refs)
+        # Remove empty entries recursively
+        def remove_empty(d):
+            if isinstance(d, dict):
+                return {k: remove_empty(v) for k, v in d.items() if v not in ({}, [], None) and remove_empty(v) not in ({}, [], None)}
+            elif isinstance(d, list):
+                return [remove_empty(x) for x in d if x not in ({}, [], None) and remove_empty(x) not in ({}, [], None)]
+            return d
+        filtered_refs = remove_empty(refs)
         with open(filename, "w", encoding="utf-8") as f:
-            json.dump(refs, f, ensure_ascii=False, indent=2)
-        print(f"Processed {len(refs)} refs.")
+            json.dump(filtered_refs, f, ensure_ascii=False, indent=2)
+        print(f"Processed {len(filtered_refs)} top-level sections/chapters.")
 
 if __name__ == "__main__":
     import argparse
@@ -107,7 +136,6 @@ if __name__ == "__main__":
     parser.add_argument("book_title", type=str, help="Book title (e.g. 'Likutei Halakhot')")
     parser.add_argument("--num", type=int, default=0, help="Number of refs to process (0 means all)")
     args = parser.parse_args()
-
     import os
     data_dir = "data"
     os.makedirs(data_dir, exist_ok=True)
@@ -118,6 +146,3 @@ if __name__ == "__main__":
     sbs.save_refs_json(refs_path, max_refs=(args.num if args.num > 0 else None))
     if args.num > 0:
         print(f"Saved structure and up to {args.num} refs for {args.book_title} in {data_dir}/")
-    else:
-        print(f"Saved structure and all refs for {args.book_title} in {data_dir}/")
-    print("Done.")
