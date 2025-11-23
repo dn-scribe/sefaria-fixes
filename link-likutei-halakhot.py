@@ -5,7 +5,7 @@ import argparse
 
 # Sefaria webapp link generator
 def sefaria_link(ref):
-    return f"https://www.sefaria.org/{ref.replace(' ', '_').replace('%2C', ',')}"
+    return f"https://www.sefaria.org.il/{ref.replace(' ', '_').replace('%2C', ',')}"
 
 # Gematria function (copied from link-likutei-chayei.py)
 def hebrew_gematria(hebrew_str):
@@ -21,8 +21,12 @@ def hebrew_gematria(hebrew_str):
     return total
 
 # Patterns for Likutei Moharan links in Likutei Halakhot
-SIMAN_PATTERN = r'(?:בְּלִקּוּטֵי\s+תִּנְיָנָא\s+)?סִימָן\s*([\u0590-\u05FF"׳״()]+)'
-MAAMAR_PATTERN = r'עַל-פִּי\s+הַמַּאֲמָר\s*([\u0590-\u05FF"׳״()]+)'
+# Hebrew letters: \u05D0-\u05EA
+# Nikud (vowel points): \u0591-\u05C7
+# Pattern allows nikud between letters
+SIMAN_PATTERN = r'(?:[\u05D0-\u05EA\u0591-\u05C7]+\s+[\u05D0-\u05EA\u0591-\u05C7]+\s+)?[\u05D0-\u05EA\u0591-\u05C7]*ס[\u0591-\u05C7]*י[\u0591-\u05C7]*מ[\u0591-\u05C7]*ן[\u0591-\u05C7]*\s*([\u05D0-\u05EA\u0591-\u05C7"׳״()]+)'
+MAAMAR_PATTERN = r'ע[\u0591-\u05C7]*ל[\u0591-\u05C7]*-[\u0591-\u05C7]*פ[\u0591-\u05C7]*י[\u0591-\u05C7]*\s+ה[\u0591-\u05C7]*מ[\u0591-\u05C7]*א[\u0591-\u05C7]*מ[\u0591-\u05C7]*ר[\u0591-\u05C7]*\s*["\u201c\u201d\u05f4][^"\u201c\u201d\u05f4]*["\u201c\u201d\u05f4]'
+MAAMAR_WITH_SIMAN_PATTERN = r'ע[\u0591-\u05C7]*ל[\u0591-\u05C7]*-[\u0591-\u05C7]*פ[\u0591-\u05C7]*י[\u0591-\u05C7]*\s+ה[\u0591-\u05C7]*מ[\u0591-\u05C7]*א[\u0591-\u05C7]*מ[\u0591-\u05C7]*ר[\u0591-\u05C7]*\s*["\u201c\u201d\u05f4][^"\u201c\u201d\u05f4]*["\u201c\u201d\u05f4]\s*\(ב[\u0591-\u05C7]*ס[\u0591-\u05C7]*י[\u0591-\u05C7]*מ[\u0591-\u05C7]*ן[\u0591-\u05C7]*\s*([\u05D0-\u05EA\u0591-\u05C7"׳״\']+)\)'
 
 # Main extraction function
 def extract_links(refs_json, output_csv):
@@ -31,45 +35,107 @@ def extract_links(refs_json, output_csv):
         data = json.load(f)
 
     results = []
-    total_refs = len(data)
-    print(f"Processing {total_refs} refs ...")
-    for idx, (refA, text) in enumerate(data.items(), 1):
-        siman_matches = list(re.finditer(SIMAN_PATTERN, text))
-        maamar_matches = list(re.finditer(MAAMAR_PATTERN, text))
-        found_links = 0
-        for match in siman_matches:
-            siman_raw = match.group(1)
-            siman_clean = siman_raw.replace('(', '').replace(')', '').strip()
-            siman_num = hebrew_gematria(siman_clean)
-            if match.group(0).startswith('בְּלִקּוּטֵי תִּנְיָנָא'):
-                refB = f"Likutei Moharan%2CPart_II.{siman_num}"
+    def build_refA(ref_path):
+        # Separate text parts from numeric parts
+        # Join text parts with %2C_, then append numeric parts with dots
+        if not ref_path:
+            return ''
+        
+        text_parts = []
+        numeric_parts = []
+        
+        # Collect all parts, separating text from numeric
+        for part in ref_path:
+            if part.isdigit():
+                numeric_parts.append(part)
             else:
-                refB = f"Likutei Moharan.{siman_num}"
-            results.append({
-                'RefA': refA,
-                'RefALink': sefaria_link(refA),
-                'RefB': refB,
-                'RefBLink': sefaria_link(refB),
-                'Snippet': text[max(0, match.start()-30):match.end()+30]
-            })
-            found_links += 1
-        for match in maamar_matches:
-            maamar_raw = match.group(1)
-            maamar_clean = maamar_raw.replace('(', '').replace(')', '').strip()
-            maamar_num = hebrew_gematria(maamar_clean)
-            refB = f"Likutei Moharan.{maamar_num}"
-            results.append({
-                'RefA': refA,
-                'RefALink': sefaria_link(refA),
-                'RefB': refB,
-                'RefBLink': sefaria_link(refB),
-                'Snippet': text[max(0, match.start()-30):match.end()+30]
-            })
-            found_links += 1
-        if found_links:
-            print(f"[{idx}/{total_refs}] {refA}: Found {found_links} link(s)")
+                # If we have accumulated numeric parts, this is a new text section
+                # so we should have processed them already (shouldn't happen with correct structure)
+                text_parts.append(part)
+        
+        # Build reference: text parts joined by %2C_, then numeric parts joined by dots
+        if text_parts and numeric_parts:
+            return '%2C_'.join(text_parts) + '.' + '.'.join(numeric_parts)
+        elif text_parts:
+            return '%2C_'.join(text_parts)
         else:
-            print(f"[{idx}/{total_refs}] {refA}: No links found")
+            return '.'.join(numeric_parts)
+
+    def walk_refs(node, ref_path):
+        found_links = 0
+        if isinstance(node, dict):
+            for k, v in node.items():
+                found_links += walk_refs(v, ref_path + [str(k)])
+        elif isinstance(node, list):
+            for idx, item in enumerate(node, 1):
+                found_links += walk_refs(item, ref_path + [str(idx)])
+        elif isinstance(node, str):
+            refA = build_refA(ref_path)
+            siman_matches = list(re.finditer(SIMAN_PATTERN, node))
+            maamar_with_siman_matches = list(re.finditer(MAAMAR_WITH_SIMAN_PATTERN, node))
+            maamar_matches = list(re.finditer(MAAMAR_PATTERN, node))
+            
+            for match in siman_matches:
+                siman_raw = match.group(1)
+                siman_clean = siman_raw.replace('(', '').replace(')', '').strip()
+                siman_num = hebrew_gematria(siman_clean)
+                # Use Part II if the reference contains 'תנינא' or 'תניינא' (strip diacritics for matching)
+                # Get context around the match for checking
+                context_start = max(0, match.start() - 50)
+                context_end = min(len(node), match.end() + 50)
+                context = node[context_start:context_end]
+                # Remove all diacritics (nikud) for matching
+                context_no_diacritics = re.sub(r'[\u0591-\u05C7]', '', context)
+                # Check if 'תנינא' or 'תניינא' appears in the context
+                if re.search(r'תנ[י]?[י]?נא', context_no_diacritics):
+                    refB = f"Likutei Moharan%2C_Part_II.{siman_num}"
+                else:
+                    refB = f"Likutei Moharan.{siman_num}"
+                results.append({
+                    'RefA': refA,
+                    'RefALink': sefaria_link(refA),
+                    'RefB': refB,
+                    'RefBLink': sefaria_link(refB),
+                    'Snippet': node[max(0, match.start()-80):match.end()+100]
+                })
+                found_links += 1
+            
+            # Process מאמר with explicit סימן (e.g., "(בסימן ח')")
+            for match in maamar_with_siman_matches:
+                siman_text = match.group(1).strip()
+                siman_clean = siman_text.replace('(', '').replace(')', '').strip()
+                siman_num = hebrew_gematria(siman_clean)
+                refB = f"Likutei Moharan.{siman_num}"
+                
+                results.append({
+                    'RefA': refA,
+                    'RefALink': sefaria_link(refA),
+                    'RefB': refB,
+                    'RefBLink': sefaria_link(refB),
+                    'Snippet': node[max(0, match.start()-80):match.end()+80]
+                })
+                found_links += 1
+            
+            # Process מאמר without סימן (gets placeholder)
+            # Skip positions already matched by maamar_with_siman
+            maamar_with_siman_positions = {match.start() for match in maamar_with_siman_matches}
+            for match in maamar_matches:
+                if match.start() in maamar_with_siman_positions:
+                    continue
+                    
+                results.append({
+                    'RefA': refA,
+                    'RefALink': sefaria_link(refA),
+                    'RefB': "Likutei Moharan.[PLACEHOLDER]",
+                    'RefBLink': sefaria_link("Likutei Moharan.[PLACEHOLDER]"),
+                    'Snippet': node[max(0, match.start()-80):match.end()+80]
+                })
+                found_links += 1
+        return found_links
+
+    print("Processing refs recursively ...")
+    total_links = walk_refs(data, [])
+    print(f"Found {total_links} links in total.")
 
     print(f"Writing {len(results)} links to {output_csv} ...")
     with open(output_csv, 'w', newline='', encoding='utf-8') as csvfile:
