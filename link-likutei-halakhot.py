@@ -76,6 +76,18 @@ def extract_links(refs_json, output_csv):
             maamar_matches = list(re.finditer(MAAMAR_PATTERN, node))
             
             for match in siman_matches:
+                # Check if "סעיף" appears within 2-3 words after "סימן" (indicates Shulchan Aruch citation)
+                # Extract text after the match (next ~50 characters to check for "סעיף")
+                check_start = match.start()
+                check_end = min(len(node), match.end() + 50)
+                check_text = node[check_start:check_end]
+                # Remove nikud for matching
+                check_text_no_nikud = re.sub(r'[\u0591-\u05C7]', '', check_text)
+                # Count words after "סימן" - if "סעיף" appears within 2-3 words, skip this match
+                words_after_siman = check_text_no_nikud.split()[:5]  # Check first 5 words
+                if any('סעיף' in word for word in words_after_siman):
+                    continue  # Skip this match - it's a Shulchan Aruch citation
+                
                 siman_raw = match.group(1)
                 siman_clean = siman_raw.replace('(', '').replace(')', '').strip()
                 siman_num = hebrew_gematria(siman_clean)
@@ -96,7 +108,7 @@ def extract_links(refs_json, output_csv):
                     'RefALink': sefaria_link(refA),
                     'RefB': refB,
                     'RefBLink': sefaria_link(refB),
-                    'Snippet': node[max(0, match.start()-80):match.end()+100]
+                    'Snippet': re.sub(r'[\u0591-\u05C7]', '', node[max(0, match.start()-80):match.end()+100])
                 })
                 found_links += 1
             
@@ -112,7 +124,7 @@ def extract_links(refs_json, output_csv):
                     'RefALink': sefaria_link(refA),
                     'RefB': refB,
                     'RefBLink': sefaria_link(refB),
-                    'Snippet': node[max(0, match.start()-80):match.end()+80]
+                    'Snippet': re.sub(r'[\u0591-\u05C7]', '', node[max(0, match.start()-80):match.end()+80])
                 })
                 found_links += 1
             
@@ -128,7 +140,7 @@ def extract_links(refs_json, output_csv):
                     'RefALink': sefaria_link(refA),
                     'RefB': "Likutei Moharan.[PLACEHOLDER]",
                     'RefBLink': sefaria_link("Likutei Moharan.[PLACEHOLDER]"),
-                    'Snippet': node[max(0, match.start()-80):match.end()+80]
+                    'Snippet': re.sub(r'[\u0591-\u05C7]', '', node[max(0, match.start()-80):match.end()+80])
                 })
                 found_links += 1
         return found_links

@@ -44,7 +44,7 @@
                 "request": "launch",
                 "program": "pull_structured_book.py",
                 "console": "internalConsole",
-                "args": ["Likutei Halakhot", "--num", "5"]
+                "args": ["Likutei Halakhot", "--num", "0"]
             },
             {
                 "name": "Pull structured Faith_in_the_Future",
