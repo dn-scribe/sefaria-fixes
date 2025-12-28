@@ -53,6 +53,14 @@
                 "program": "pull_structured_book.py",
                 "console": "internalConsole",
                 "args": ["Faith in the Future", "--language", "en"]
+            },
+                    {
+                "name": "Pull structured Likutey_Moharan",
+                "type": "debugpy",
+                "request": "launch",
+                "program": "pull_structured_book.py",
+                "console": "internalConsole",
+                "args": ["Likutei Moharan", "--num", "0"]
             }
     ]
 }

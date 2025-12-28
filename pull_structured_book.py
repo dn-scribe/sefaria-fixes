@@ -1,5 +1,6 @@
 import requests
 import json
+import re
 
 class SefariaBookStructure:
     def save_structure_json(self, filename):
@@ -7,9 +8,20 @@ class SefariaBookStructure:
             json.dump(self.structure, f, ensure_ascii=False, indent=2)
     BASE_URL = "https://www.sefaria.org/api/v2/index/"
 
-    def __init__(self, book_title):
+    @staticmethod
+    def remove_nikud(text):
+        """Remove Hebrew nikud (vowel points) from text."""
+        if not text:
+            return text
+        # Hebrew nikud Unicode range: \u0591-\u05C7
+        # This includes cantillation marks, vowel points, and other diacriticals
+        nikud_pattern = r'[\u0591-\u05C7]'
+        return re.sub(nikud_pattern, '', text)
+
+    def __init__(self, book_title, with_nikud=False):
         self.book_title = book_title
         self.structure = None
+        self.with_nikud = with_nikud
 
     def fetch_structure(self):
         url = f"{self.BASE_URL}{self.book_title.replace(' ', '_')}"
@@ -70,6 +82,9 @@ class SefariaBookStructure:
                 if isinstance(text_segment, list) and text_segment and isinstance(text_segment[0], str):
                     result = {}
                     for i, text_item in enumerate(text_segment, 1):
+                        # Remove nikud if requested
+                        if not self.with_nikud and isinstance(text_item, str):
+                            text_item = self.remove_nikud(text_item)
                         result[str(i)] = text_item
                     print(f"    Text segments: {len(text_segment)}")
                     return result
@@ -83,8 +98,16 @@ class SefariaBookStructure:
                     key = str(i)
                     current_keys = parent_keys + [key]
                     print(f"    {section_names[depth]} {key}")
-                    result[key] = build_hierarchy(section_names, sub_segment, depth + 1, current_keys)
+                    # Process sub_segment recursively
+                    processed = build_hierarchy(section_names, sub_segment, depth + 1, current_keys)
+                    # Also handle string content at this level (when sub_segment is a string)
+                    if not self.with_nikud and isinstance(sub_segment, str):
+                        processed = self.remove_nikud(sub_segment)
+                    result[key] = processed
                 return result
+            # Handle single string at this level
+            if not self.with_nikud and isinstance(text_segment, str):
+                return self.remove_nikud(text_segment)
             return text_segment
 
         def set_nested(refs, keys, value):
@@ -240,13 +263,14 @@ if __name__ == "__main__":
     parser.add_argument("book_title", type=str, help="Book title (e.g. 'Likutei Halakhot')")
     parser.add_argument("--num", type=int, default=0, help="Maximum number of API calls to text API (0 means unlimited)")
     parser.add_argument("--language", type=str, choices=["he", "en"], default="he", help="Text language: 'he' for Hebrew, 'en' for English (default: he)")
+    parser.add_argument("--with-nikud", action="store_true", help="Keep nikud (vowel points) in Hebrew text (default: remove nikud)")
     args = parser.parse_args()
     import os
     data_dir = "data"
     os.makedirs(data_dir, exist_ok=True)
     structure_path = os.path.join(data_dir, f"{args.book_title.replace(' ', '_')}_structure.json")
     refs_path = os.path.join(data_dir, f"{args.book_title.replace(' ', '_')}_refs.json")
-    sbs = SefariaBookStructure(args.book_title)
+    sbs = SefariaBookStructure(args.book_title, with_nikud=args.with_nikud)
     sbs.save_structure_json(structure_path)
     sbs.save_refs_json(refs_path, max_refs=(args.num if args.num > 0 else None), language=args.language)
     if args.num > 0:
