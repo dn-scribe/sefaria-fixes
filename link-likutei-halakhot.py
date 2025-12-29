@@ -2,6 +2,8 @@ import json
 import csv
 import re
 import argparse
+from dataclasses import dataclass
+from typing import List, Dict, Any, Optional, Tuple, Set
 
 # Sefaria webapp link generator
 def sefaria_link(ref):
@@ -28,13 +30,212 @@ SIMAN_PATTERN = r'(?:[\u05D0-\u05EA\u0591-\u05C7]+\s+[\u05D0-\u05EA\u0591-\u05C7
 MAAMAR_PATTERN = r'ע[\u0591-\u05C7]*ל[\u0591-\u05C7]*-[\u0591-\u05C7]*פ[\u0591-\u05C7]*י[\u0591-\u05C7]*\s+ה[\u0591-\u05C7]*מ[\u0591-\u05C7]*א[\u0591-\u05C7]*מ[\u0591-\u05C7]*ר[\u0591-\u05C7]*\s*["\u201c\u201d\u05f4][^"\u201c\u201d\u05f4]*["\u201c\u201d\u05f4]'
 MAAMAR_WITH_SIMAN_PATTERN = r'ע[\u0591-\u05C7]*ל[\u0591-\u05C7]*-[\u0591-\u05C7]*פ[\u0591-\u05C7]*י[\u0591-\u05C7]*\s+ה[\u0591-\u05C7]*מ[\u0591-\u05C7]*א[\u0591-\u05C7]*מ[\u0591-\u05C7]*ר[\u0591-\u05C7]*\s*["\u201c\u201d\u05f4][^"\u201c\u201d\u05f4]*["\u201c\u201d\u05f4]\s*\(ב[\u0591-\u05C7]*ס[\u0591-\u05C7]*י[\u0591-\u05C7]*מ[\u0591-\u05C7]*ן[\u0591-\u05C7]*\s*([\u05D0-\u05EA\u0591-\u05C7"׳״\']+)\)'
 
+HEBREW_NIKUD_RE = re.compile(r'[\u0591-\u05C7]')
+HTML_TAG_RE = re.compile(r'<[^>]+>')
+NON_HEBREW_RE = re.compile(r'[^0-9\u05D0-\u05EA\s]')
+
+
+def strip_nikud(text: str) -> str:
+    return HEBREW_NIKUD_RE.sub('', text)
+
+
+def normalize_text_for_tokens(text: str) -> str:
+    text = HTML_TAG_RE.sub(' ', text or '')
+    text = strip_nikud(text)
+    text = (text.replace('״', '"')
+                .replace('“', '"')
+                .replace('”', '"')
+                .replace('׳', "'"))
+    text = NON_HEBREW_RE.sub(' ', text)
+    return re.sub(r'\s+', ' ', text).strip()
+
+
+def tokenize(text: str) -> List[str]:
+    normalized = normalize_text_for_tokens(text)
+    if not normalized:
+        return []
+    return normalized.split()
+
+
+def build_context_tokens(text: str, match_start: int, match_end: int, context_words: int,
+                         symmetric: bool = True) -> Tuple[List[str], str]:
+    if context_words <= 0:
+        context_words = 1
+    before_tokens = tokenize(text[:match_start])
+    after_tokens = tokenize(text[match_end:])
+    ref_tokens = tokenize(text[match_start:match_end])
+    if symmetric:
+        pre_target = context_words // 2
+        post_target = context_words - pre_target
+        pre_tokens = before_tokens[-pre_target:] if pre_target else []
+        post_tokens = after_tokens[:post_target] if post_target else []
+        if len(pre_tokens) < pre_target:
+            missing = pre_target - len(pre_tokens)
+            post_tokens = after_tokens[:post_target + missing]
+        if len(post_tokens) < post_target:
+            missing = post_target - len(post_tokens)
+            pre_tokens = before_tokens[-(pre_target + missing):]
+    else:
+        pre_tokens = []
+        post_tokens = after_tokens[:context_words]
+    context_tokens = pre_tokens + post_tokens
+    snippet_tokens = pre_tokens + ref_tokens + post_tokens
+    snippet = ' '.join(snippet_tokens).strip()
+    return context_tokens, snippet
+
+
+@dataclass
+class ParagraphEntry:
+    index: int
+    path: List[str]
+    text: str
+    tokens: List[str]
+    token_set: Set[str]
+    @property
+    def ref_path(self) -> str:
+        return '.'.join(self.path)
+
+
+class LikuteiMoharanIndex:
+    def __init__(self, lm_json_path: str):
+        with open(lm_json_path, 'r', encoding='utf-8') as f:
+            raw = json.load(f)
+        root = raw.get('Likutei Moharan', {})
+        part_i = {k: v for k, v in root.items() if k != 'Part II'}
+        part_ii = root.get('Part II', {})
+        self.parts = {
+            'Likutei Moharan': self._build_part_index(part_i),
+            'Part II': self._build_part_index(part_ii)
+        }
+
+    def _build_part_index(self, part_data: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+        index = {}
+        for chapter_key, chapter_node in part_data.items():
+            if not str(chapter_key).isdigit():
+                continue
+            paragraphs = self._flatten_chapter(chapter_node)
+            index[str(chapter_key)] = {
+                'paragraphs': paragraphs,
+                'full_text': '\n'.join(p.text for p in paragraphs),
+                'structured': chapter_node
+            }
+        return index
+
+    def _flatten_chapter(self, chapter_node: Any) -> List[ParagraphEntry]:
+        paragraphs: List[ParagraphEntry] = []
+        counter = 0
+
+        def walk(node: Any, path: List[str]):
+            nonlocal counter
+            if isinstance(node, str):
+                clean_text = node.strip()
+                if not clean_text:
+                    return
+                counter += 1
+                token_list = tokenize(clean_text)
+                paragraphs.append(
+                    ParagraphEntry(
+                        index=counter,
+                        path=path.copy(),
+                        text=clean_text,
+                        tokens=token_list,
+                        token_set=set(token_list)
+                    )
+                )
+            elif isinstance(node, dict):
+                for key in sorted(node.keys(), key=self._dict_sort_key):
+                    walk(node[key], path + [str(key)])
+            elif isinstance(node, list):
+                for idx, item in enumerate(node, 1):
+                    walk(item, path + [str(idx)])
+
+        walk(chapter_node, [])
+        return paragraphs
+
+    @staticmethod
+    def _dict_sort_key(key: str) -> Tuple[int, Any]:
+        if str(key).isdigit():
+            return (0, int(key))
+        return (1, key)
+
+    def has_chapter(self, part: str, chapter: int) -> bool:
+        return str(chapter) in self.parts.get(part, {})
+
+    def get_chapter(self, part: str, chapter: int) -> Optional[Dict[str, Any]]:
+        return self.parts.get(part, {}).get(str(chapter))
+
+
+def find_k_of_n_match(paragraphs: List[ParagraphEntry], context_tokens: List[str],
+                      k: int, n: int) -> Optional[Dict[str, Any]]:
+    if not paragraphs or not context_tokens:
+        return None
+    token_weights = {token: len(token) for token in context_tokens}
+    windows: List[List[str]] = []
+    for idx in range(len(context_tokens)):
+        window = context_tokens[idx:idx + n]
+        if len(window) >= max(k, 1):
+            windows.append(window)
+    if not windows:
+        windows = [context_tokens]
+
+    best_match = None
+    for paragraph in paragraphs:
+        if not paragraph.tokens:
+            continue
+        token_set = paragraph.token_set
+        for window in windows:
+            matches = 0
+            weight = 0
+            for word in window:
+                if word in token_set:
+                    matches += 1
+                    weight += token_weights.get(word, len(word))
+            if weight > 0:
+                record = {
+                    'paragraph_index': paragraph.index,
+                    'paragraph_text': paragraph.text,
+                    'paragraph_path': paragraph.ref_path,
+                    'matches': matches,
+                    'match_weight': weight,
+                    'window_size': len(window),
+                    'window_text': ' '.join(window)
+                }
+                if best_match is None:
+                    best_match = record
+                else:
+                    if weight > best_match['match_weight']:
+                        best_match = record
+                    elif weight == best_match['match_weight']:
+                        if matches > best_match['matches']:
+                            best_match = record
+                        elif matches == best_match['matches']:
+                            if record['window_size'] > best_match['window_size']:
+                                best_match = record
+                            elif (record['window_size'] == best_match['window_size'] and
+                                  paragraph.index < best_match['paragraph_index']):
+                                best_match = record
+                if matches >= k:
+                    record['meets_threshold'] = True
+                    return record
+    if best_match and best_match['matches'] >= k:
+        best_match['meets_threshold'] = True
+        return best_match
+    return best_match if best_match and best_match['matches'] >= k else None
+
+
 # Main extraction function
-def extract_links(refs_json, output_csv):
+def extract_links(refs_json, output_csv, lm_json, k_of_n, n_window, context_words,
+                  symmetric_context=True, output_json=None, llm_payloads_path=None):
     print(f"Loading refs from {refs_json} ...")
     with open(refs_json, 'r', encoding='utf-8') as f:
         data = json.load(f)
 
+    print(f"Loading Likutei Moharan index from {lm_json} ...")
+    lm_index = LikuteiMoharanIndex(lm_json)
+
     results = []
+    llm_requests = []
+
     def build_refA(ref_path):
         # Separate text parts from numeric parts
         # Join text parts with %2C_, then append numeric parts with dots
@@ -71,10 +272,11 @@ def extract_links(refs_json, output_csv):
                 found_links += walk_refs(item, ref_path + [str(idx)])
         elif isinstance(node, str):
             refA = build_refA(ref_path)
+            refA_link = sefaria_link(refA)
             siman_matches = list(re.finditer(SIMAN_PATTERN, node))
             maamar_with_siman_matches = list(re.finditer(MAAMAR_WITH_SIMAN_PATTERN, node))
             maamar_matches = list(re.finditer(MAAMAR_PATTERN, node))
-            
+
             for match in siman_matches:
                 # Check if "סעיף" appears within 2-3 words after "סימן" (indicates Shulchan Aruch citation)
                 # Extract text after the match (next ~50 characters to check for "סעיף")
@@ -87,7 +289,7 @@ def extract_links(refs_json, output_csv):
                 words_after_siman = check_text_no_nikud.split()[:5]  # Check first 5 words
                 if any('סעיף' in word for word in words_after_siman):
                     continue  # Skip this match - it's a Shulchan Aruch citation
-                
+
                 siman_raw = match.group(1)
                 siman_clean = siman_raw.replace('(', '').replace(')', '').strip()
                 siman_num = hebrew_gematria(siman_clean)
@@ -100,47 +302,157 @@ def extract_links(refs_json, output_csv):
                 context_no_diacritics = re.sub(r'[\u0591-\u05C7]', '', context)
                 # Check if 'תנינא' or 'תניינא' appears in the context
                 if re.search(r'תנ[י]?[י]?נא', context_no_diacritics):
-                    refB = f"Likutei Moharan%2C_Part_II.{siman_num}"
+                    refB_prefix = "Likutei Moharan%2C_Part_II"
+                    lm_part = 'Part II'
                 else:
-                    refB = f"Likutei Moharan.{siman_num}"
+                    refB_prefix = "Likutei Moharan"
+                    lm_part = 'Likutei Moharan'
+                if not lm_index.has_chapter(lm_part, siman_num):
+                    continue  # False positive - referenced chapter doesn't exist
+                refB = f"{refB_prefix}.{siman_num}"
+                refB_link = sefaria_link(refB)
+                chapter_data = lm_index.get_chapter(lm_part, siman_num)
+                context_tokens, snippet_text = build_context_tokens(
+                    node,
+                    match.start(),
+                    match.end(),
+                    context_words,
+                    symmetric=symmetric_context
+                )
+                deterministic_match = find_k_of_n_match(
+                    chapter_data.get('paragraphs', []),
+                    context_tokens,
+                    k_of_n,
+                    n_window
+                ) if chapter_data else None
+                refB_exact = ''
+                refB_exact_link = ''
+                refB_excerpt = ''
+                match_type = 'pending_llm'
+                k_n_ref = ''
+                deterministic_score = ''
+                llm_status = 'pending'
+                if deterministic_match:
+                    paragraph_index = deterministic_match['paragraph_index']
+                    paragraph_path = deterministic_match['paragraph_path'] or str(paragraph_index)
+                    refB_exact = f"{refB}.{paragraph_path}"
+                    refB_exact_link = sefaria_link(refB_exact)
+                    match_type = 'k_of_n'
+                    matches = deterministic_match['matches']
+                    window_size = deterministic_match['window_size']
+                    k_n_ref = f"{matches}/{window_size} words match (window=\"{deterministic_match['window_text']}\")"
+                    deterministic_score = f"{matches}/{window_size}"
+                    llm_status = 'not_needed'
+                    refB_excerpt = deterministic_match['paragraph_text']
+                else:
+                    if chapter_data:
+                        llm_requests.append({
+                            'ref_a': refA,
+                            'ref_a_link': refA_link,
+                            'ref_b': refB,
+                            'ref_b_link': refB_link,
+                            'lm_part': lm_part,
+                            'lm_chapter': siman_num,
+                            'lh_text': snippet_text,
+                            'lm_chapter_text': chapter_data.get('full_text', ''),
+                            'lm_chapter_structured': chapter_data.get('structured'),
+                            'prompt_instructions': (
+                                "Given the Likutei Halakhot paragraph and the structured Likutei Moharan chapter, "
+                                "identify the single most relevant Likutei Moharan paragraph. "
+                                "Return JSON with keys \"paragraph_ref\" (full hierarchical ref such as "
+                                "\"Likutei Moharan%2C_Part_II.23.1.5\"), \"paragraph_link\", \"excerpt\", and "
+                                "\"confidence\" (0-1). Include the full ref path down to the paragraph number "
+                                "so it can be opened directly on Sefaria. Example outputs:\n"
+                                "Example 1: {\"paragraph_ref\": \"Likutei Moharan.61.1.3\", "
+                                "\"paragraph_link\": \"https://www.sefaria.org.il/Likutei_Moharan.61.1.3\", "
+                                "\"excerpt\": \"הינו, כי כל הלמודים...\", \"confidence\": 0.91}\n"
+                                "Example 2: {\"paragraph_ref\": \"Likutei Moharan%2C_Part_II.23.1.5\", "
+                                "\"paragraph_link\": \"https://www.sefaria.org.il/Likutei_Moharan,_Part_II.23.1.5\", "
+                                "\"excerpt\": \"וזה בחינת ששון ושמחה...\", \"confidence\": 0.87}"
+                            )
+                        })
                 results.append({
                     'RefA': refA,
-                    'RefALink': sefaria_link(refA),
+                    'RefALink': refA_link,
                     'RefB': refB,
-                    'RefBLink': sefaria_link(refB),
-                    'Snippet': re.sub(r'[\u0591-\u05C7]', '', node[max(0, match.start()-80):match.end()+100])
+                    'RefBLink': refB_link,
+                    'Snippet': snippet_text,
+                    'RefBExact': refB_exact,
+                    'RefBExactLink': refB_exact_link,
+                    'RefBExcerpt': refB_excerpt,
+                    'MatchType': match_type,
+                    'k_n_ref': k_n_ref,
+                    'DeterministicScore': deterministic_score,
+                    'LLMStatus': llm_status,
+                    'LLMParagraph': '',
+                    'LLMConfidence': '',
+                    'LLMExcerpt': ''
                 })
                 found_links += 1
-            
+
             # Process מאמר with explicit סימן (e.g., "(בסימן ח')")
             for match in maamar_with_siman_matches:
                 siman_text = match.group(1).strip()
                 siman_clean = siman_text.replace('(', '').replace(')', '').strip()
                 siman_num = hebrew_gematria(siman_clean)
                 refB = f"Likutei Moharan.{siman_num}"
-                
+                _, snippet_text = build_context_tokens(
+                    node,
+                    match.start(),
+                    match.end(),
+                    context_words,
+                    symmetric=symmetric_context
+                )
+
                 results.append({
                     'RefA': refA,
-                    'RefALink': sefaria_link(refA),
+                    'RefALink': refA_link,
                     'RefB': refB,
                     'RefBLink': sefaria_link(refB),
-                    'Snippet': re.sub(r'[\u0591-\u05C7]', '', node[max(0, match.start()-80):match.end()+80])
+                    'Snippet': snippet_text,
+                    'RefBExact': '',
+                    'RefBExactLink': '',
+                    'RefBExcerpt': '',
+                    'MatchType': 'maamar_with_siman',
+                    'k_n_ref': '',
+                    'DeterministicScore': '',
+                    'LLMStatus': 'pending',
+                    'LLMParagraph': '',
+                    'LLMConfidence': '',
+                    'LLMExcerpt': ''
                 })
                 found_links += 1
-            
+
             # Process מאמר without סימן (gets placeholder)
             # Skip positions already matched by maamar_with_siman
             maamar_with_siman_positions = {match.start() for match in maamar_with_siman_matches}
             for match in maamar_matches:
                 if match.start() in maamar_with_siman_positions:
                     continue
-                    
+                _, snippet_text = build_context_tokens(
+                    node,
+                    match.start(),
+                    match.end(),
+                    context_words,
+                    symmetric=symmetric_context
+                )
+
                 results.append({
                     'RefA': refA,
-                    'RefALink': sefaria_link(refA),
+                    'RefALink': refA_link,
                     'RefB': "Likutei Moharan.[PLACEHOLDER]",
                     'RefBLink': sefaria_link("Likutei Moharan.[PLACEHOLDER]"),
-                    'Snippet': re.sub(r'[\u0591-\u05C7]', '', node[max(0, match.start()-80):match.end()+80])
+                    'Snippet': snippet_text,
+                    'RefBExact': '',
+                    'RefBExactLink': '',
+                    'RefBExcerpt': '',
+                    'MatchType': 'maamar_without_siman',
+                    'k_n_ref': '',
+                    'DeterministicScore': '',
+                    'LLMStatus': 'pending',
+                    'LLMParagraph': '',
+                    'LLMConfidence': '',
+                    'LLMExcerpt': ''
                 })
                 found_links += 1
         return found_links
@@ -150,16 +462,47 @@ def extract_links(refs_json, output_csv):
     print(f"Found {total_links} links in total.")
 
     print(f"Writing {len(results)} links to {output_csv} ...")
+    fieldnames = [
+        'RefA', 'RefALink', 'RefB', 'RefBLink', 'Snippet',
+        'MatchType', 'k_n_ref', 'DeterministicScore',
+        'RefBExact', 'RefBExactLink', 'RefBExcerpt',
+        'LLMStatus', 'LLMParagraph', 'LLMConfidence', 'LLMExcerpt'
+    ]
     with open(output_csv, 'w', newline='', encoding='utf-8') as csvfile:
-        writer = csv.DictWriter(csvfile, fieldnames=['RefA', 'RefALink', 'RefB', 'RefBLink', 'Snippet'])
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames, quoting=csv.QUOTE_ALL)
         writer.writeheader()
         for row in results:
             writer.writerow(row)
+    if output_json:
+        print(f"Writing JSON dump to {output_json} ...")
+        with open(output_json, 'w', encoding='utf-8') as f:
+            json.dump(results, f, ensure_ascii=False, indent=2)
+    if llm_payloads_path:
+        print(f"Writing {len(llm_requests)} pending LLM payloads to {llm_payloads_path} ...")
+        with open(llm_payloads_path, 'w', encoding='utf-8') as f:
+            json.dump(llm_requests, f, ensure_ascii=False, indent=2)
     print("Done.")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Extract Likutei Halakhot links to Likutei Moharan and export to CSV.")
     parser.add_argument('--refs-json', type=str, default='data/Likutei_Halakhot_refs.json', help='Input refs JSON file')
     parser.add_argument('--output-csv', type=str, default='data/likutei-halakhot-links.csv', help='Output CSV file')
+    parser.add_argument('--lm-json', type=str, default='data/Likutei_Moharan_refs.json', help='Likutei Moharan refs JSON file')
+    parser.add_argument('--match-k', type=int, default=4, help='Minimum overlapping words for k-of-n search')
+    parser.add_argument('--match-n', type=int, default=7, help='Window size (n) for k-of-n search')
+    parser.add_argument('--context-words', type=int, default=40, help='Maximum LH words to use around the reference for matching')
+    parser.add_argument('--no-symmetric-context', action='store_true', help='Disable symmetric context (use only words after the ref)')
+    parser.add_argument('--output-json', type=str, help='Optional JSON dump of the link results')
+    parser.add_argument('--llm-payloads-json', type=str, help='Optional path to write pending LLM payloads JSON')
     args = parser.parse_args()
-    extract_links(args.refs_json, args.output_csv)
+    extract_links(
+        args.refs_json,
+        args.output_csv,
+        args.lm_json,
+        args.match_k,
+        args.match_n,
+        args.context_words,
+        symmetric_context=not args.no_symmetric_context,
+        output_json=args.output_json,
+        llm_payloads_path=args.llm_payloads_json
+    )
