@@ -191,12 +191,14 @@ def find_k_of_n_match(paragraphs: List[ParagraphEntry], context_tokens: List[str
                     matches += 1
                     weight += token_weights.get(word, len(word))
             if weight > 0:
+                matched_words = [word for word in window if word in token_set]
                 record = {
                     'paragraph_index': paragraph.index,
                     'paragraph_text': paragraph.text,
                     'paragraph_path': paragraph.ref_path,
                     'matches': matches,
                     'match_weight': weight,
+                    'matched_words': matched_words,
                     'window_size': len(window),
                     'window_text': ' '.join(window)
                 }
@@ -332,6 +334,7 @@ def extract_links(refs_json, output_csv, lm_json, k_of_n, n_window, context_word
                 k_n_ref = ''
                 deterministic_score = ''
                 llm_status = 'pending'
+                matched_words_value = ''
                 if deterministic_match:
                     paragraph_index = deterministic_match['paragraph_index']
                     paragraph_path = deterministic_match['paragraph_path'] or str(paragraph_index)
@@ -344,6 +347,7 @@ def extract_links(refs_json, output_csv, lm_json, k_of_n, n_window, context_word
                     deterministic_score = f"{matches}/{window_size}"
                     llm_status = 'not_needed'
                     refB_excerpt = deterministic_match['paragraph_text']
+                    matched_words_value = ' '.join(deterministic_match.get('matched_words', []))
                 else:
                     if chapter_data:
                         llm_requests.append({
@@ -380,9 +384,10 @@ def extract_links(refs_json, output_csv, lm_json, k_of_n, n_window, context_word
                     'RefBExact': refB_exact,
                     'RefBExactLink': refB_exact_link,
                     'RefBExcerpt': refB_excerpt,
-                    'MatchType': match_type,
-                    'k_n_ref': k_n_ref,
-                    'DeterministicScore': deterministic_score,
+            'MatchType': match_type,
+            'k_n_ref': k_n_ref,
+            'MatchedWords': matched_words_value,
+            'DeterministicScore': deterministic_score,
                     'LLMStatus': llm_status,
                     'LLMParagraph': '',
                     'LLMConfidence': '',
@@ -464,7 +469,7 @@ def extract_links(refs_json, output_csv, lm_json, k_of_n, n_window, context_word
     print(f"Writing {len(results)} links to {output_csv} ...")
     fieldnames = [
         'RefA', 'RefALink', 'RefB', 'RefBLink', 'Snippet',
-        'MatchType', 'k_n_ref', 'DeterministicScore',
+        'MatchType', 'k_n_ref', 'MatchedWords', 'DeterministicScore',
         'RefBExact', 'RefBExactLink', 'RefBExcerpt',
         'LLMStatus', 'LLMParagraph', 'LLMConfidence', 'LLMExcerpt'
     ]
