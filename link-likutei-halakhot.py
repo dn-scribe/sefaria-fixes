@@ -2,6 +2,7 @@ import json
 import csv
 import re
 import argparse
+import os
 from dataclasses import dataclass
 from typing import List, Dict, Any, Optional, Tuple, Set
 
@@ -169,7 +170,6 @@ def find_k_of_n_match(paragraphs: List[ParagraphEntry], context_tokens: List[str
                       k: int, n: int) -> Optional[Dict[str, Any]]:
     if not paragraphs or not context_tokens:
         return None
-    token_weights = {token: len(token) for token in context_tokens}
     windows: List[List[str]] = []
     for idx in range(len(context_tokens)):
         window = context_tokens[idx:idx + n]
@@ -184,14 +184,36 @@ def find_k_of_n_match(paragraphs: List[ParagraphEntry], context_tokens: List[str
             continue
         token_set = paragraph.token_set
         for window in windows:
-            matches = 0
+            matched_words: List[str] = []
+            unique_words = set()
             weight = 0
-            for word in window:
+            run_len = 0
+            run_total_len = 0
+            prev_match_idx = None
+            for idx, word in enumerate(window):
                 if word in token_set:
-                    matches += 1
-                    weight += token_weights.get(word, len(word))
-            if weight > 0:
-                matched_words = [word for word in window if word in token_set]
+                    matched_words.append(word)
+                    unique_words.add(word)
+                    word_len = len(word)
+                    if prev_match_idx is not None and idx == prev_match_idx + 1:
+                        run_len += 1
+                        run_total_len += word_len
+                    else:
+                        if run_len > 0:
+                            weight += run_total_len * run_len
+                        run_len = 1
+                        run_total_len = word_len
+                    prev_match_idx = idx
+                else:
+                    if run_len > 0:
+                        weight += run_total_len * run_len
+                        run_len = 0
+                        run_total_len = 0
+                    prev_match_idx = None
+            if run_len > 0:
+                weight += run_total_len * run_len
+            matches = len(unique_words)
+            if matches > 0:
                 record = {
                     'paragraph_index': paragraph.index,
                     'paragraph_text': paragraph.text,
@@ -200,14 +222,15 @@ def find_k_of_n_match(paragraphs: List[ParagraphEntry], context_tokens: List[str
                     'match_weight': weight,
                     'matched_words': matched_words,
                     'window_size': len(window),
-                    'window_text': ' '.join(window)
+                    'window_text': ' '.join(window),
+                    'meets_threshold': matches >= k
                 }
                 if best_match is None:
                     best_match = record
                 else:
-                    if weight > best_match['match_weight']:
+                    if weight > best_match.get('match_weight', 0):
                         best_match = record
-                    elif weight == best_match['match_weight']:
+                    elif weight == best_match.get('match_weight', 0):
                         if matches > best_match['matches']:
                             best_match = record
                         elif matches == best_match['matches']:
@@ -217,17 +240,14 @@ def find_k_of_n_match(paragraphs: List[ParagraphEntry], context_tokens: List[str
                                   paragraph.index < best_match['paragraph_index']):
                                 best_match = record
                 if matches >= k:
-                    record['meets_threshold'] = True
                     return record
-    if best_match and best_match['matches'] >= k:
-        best_match['meets_threshold'] = True
-        return best_match
-    return best_match if best_match and best_match['matches'] >= k else None
+    return best_match
 
 
 # Main extraction function
 def extract_links(refs_json, output_csv, lm_json, k_of_n, n_window, context_words,
-                  symmetric_context=True, output_json=None, llm_payloads_path=None):
+                  symmetric_context=True, output_json=None, llm_payloads_path=None,
+                  update_output_json=False):
     print(f"Loading refs from {refs_json} ...")
     with open(refs_json, 'r', encoding='utf-8') as f:
         data = json.load(f)
@@ -335,47 +355,59 @@ def extract_links(refs_json, output_csv, lm_json, k_of_n, n_window, context_word
                 deterministic_score = ''
                 llm_status = 'pending'
                 matched_words_value = ''
+                queue_for_llm = False
+
+                def enqueue_llm():
+                    if not chapter_data:
+                        return
+                    llm_requests.append({
+                        'ref_a': refA,
+                        'ref_a_link': refA_link,
+                        'ref_b': refB,
+                        'ref_b_link': refB_link,
+                        'lm_part': lm_part,
+                        'lm_chapter': siman_num,
+                        'lh_text': snippet_text,
+                        'lm_chapter_text': chapter_data.get('full_text', ''),
+                        'lm_chapter_structured': chapter_data.get('structured'),
+                        'prompt_instructions': (
+                            "Given the Likutei Halakhot paragraph and the structured Likutei Moharan chapter, "
+                            "identify the single most relevant Likutei Moharan paragraph. "
+                            "Return JSON with keys \"paragraph_ref\" (full hierarchical ref such as "
+                            "\"Likutei Moharan%2C_Part_II.23.1.5\"), \"paragraph_link\", \"excerpt\", and "
+                            "\"confidence\" (0-1). Include the full ref path down to the paragraph number "
+                            "so it can be opened directly on Sefaria. Example outputs:\n"
+                            "Example 1: {\"paragraph_ref\": \"Likutei Moharan.61.1.3\", "
+                            "\"paragraph_link\": \"https://www.sefaria.org.il/Likutei_Moharan.61.1.3\", "
+                            "\"excerpt\": \"הינו, כי כל הלמודים...\", \"confidence\": 0.91}\n"
+                            "Example 2: {\"paragraph_ref\": \"Likutei Moharan%2C_Part_II.23.1.5\", "
+                            "\"paragraph_link\": \"https://www.sefaria.org.il/Likutei_Moharan,_Part_II.23.1.5\", "
+                            "\"excerpt\": \"וזה בחינת ששון ושמחה...\", \"confidence\": 0.87}"
+                        )
+                    })
+
                 if deterministic_match:
-                    paragraph_index = deterministic_match['paragraph_index']
-                    paragraph_path = deterministic_match['paragraph_path'] or str(paragraph_index)
-                    refB_exact = f"{refB}.{paragraph_path}"
-                    refB_exact_link = sefaria_link(refB_exact)
-                    match_type = 'k_of_n'
                     matches = deterministic_match['matches']
                     window_size = deterministic_match['window_size']
                     k_n_ref = f"{matches}/{window_size} words match (window=\"{deterministic_match['window_text']}\")"
                     deterministic_score = f"{matches}/{window_size}"
-                    llm_status = 'not_needed'
-                    refB_excerpt = deterministic_match['paragraph_text']
                     matched_words_value = ' '.join(deterministic_match.get('matched_words', []))
+                    refB_excerpt = deterministic_match['paragraph_text']
+                    paragraph_index = deterministic_match['paragraph_index']
+                    paragraph_path = deterministic_match['paragraph_path'] or str(paragraph_index)
+                    refB_exact = f"{refB}.{paragraph_path}"
+                    refB_exact_link = sefaria_link(refB_exact)
+                    if deterministic_match.get('meets_threshold'):
+                        match_type = 'k_of_n'
+                        llm_status = 'not_needed'
+                    else:
+                        queue_for_llm = True
                 else:
-                    if chapter_data:
-                        llm_requests.append({
-                            'ref_a': refA,
-                            'ref_a_link': refA_link,
-                            'ref_b': refB,
-                            'ref_b_link': refB_link,
-                            'lm_part': lm_part,
-                            'lm_chapter': siman_num,
-                            'lh_text': snippet_text,
-                            'lm_chapter_text': chapter_data.get('full_text', ''),
-                            'lm_chapter_structured': chapter_data.get('structured'),
-                            'prompt_instructions': (
-                                "Given the Likutei Halakhot paragraph and the structured Likutei Moharan chapter, "
-                                "identify the single most relevant Likutei Moharan paragraph. "
-                                "Return JSON with keys \"paragraph_ref\" (full hierarchical ref such as "
-                                "\"Likutei Moharan%2C_Part_II.23.1.5\"), \"paragraph_link\", \"excerpt\", and "
-                                "\"confidence\" (0-1). Include the full ref path down to the paragraph number "
-                                "so it can be opened directly on Sefaria. Example outputs:\n"
-                                "Example 1: {\"paragraph_ref\": \"Likutei Moharan.61.1.3\", "
-                                "\"paragraph_link\": \"https://www.sefaria.org.il/Likutei_Moharan.61.1.3\", "
-                                "\"excerpt\": \"הינו, כי כל הלמודים...\", \"confidence\": 0.91}\n"
-                                "Example 2: {\"paragraph_ref\": \"Likutei Moharan%2C_Part_II.23.1.5\", "
-                                "\"paragraph_link\": \"https://www.sefaria.org.il/Likutei_Moharan,_Part_II.23.1.5\", "
-                                "\"excerpt\": \"וזה בחינת ששון ושמחה...\", \"confidence\": 0.87}"
-                            )
-                        })
-                results.append({
+                    queue_for_llm = True
+
+                if queue_for_llm:
+                    enqueue_llm()
+                result_row = {
                     'RefA': refA,
                     'RefALink': refA_link,
                     'RefB': refB,
@@ -391,8 +423,10 @@ def extract_links(refs_json, output_csv, lm_json, k_of_n, n_window, context_word
                     'LLMStatus': llm_status,
                     'LLMParagraph': '',
                     'LLMConfidence': '',
-                    'LLMExcerpt': ''
-                })
+                    'LLMExcerpt': '',
+                    'Status': 'Pending'
+                }
+                results.append(result_row)
                 found_links += 1
 
             # Process מאמר with explicit סימן (e.g., "(בסימן ח')")
@@ -471,7 +505,8 @@ def extract_links(refs_json, output_csv, lm_json, k_of_n, n_window, context_word
         'RefA', 'RefALink', 'RefB', 'RefBLink', 'Snippet',
         'MatchType', 'k_n_ref', 'MatchedWords', 'DeterministicScore',
         'RefBExact', 'RefBExactLink', 'RefBExcerpt',
-        'LLMStatus', 'LLMParagraph', 'LLMConfidence', 'LLMExcerpt'
+        'LLMStatus', 'LLMParagraph', 'LLMConfidence', 'LLMExcerpt',
+        'Status'
     ]
     with open(output_csv, 'w', newline='', encoding='utf-8') as csvfile:
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames, quoting=csv.QUOTE_ALL)
@@ -480,6 +515,17 @@ def extract_links(refs_json, output_csv, lm_json, k_of_n, n_window, context_word
             writer.writerow(row)
     if output_json:
         print(f"Writing JSON dump to {output_json} ...")
+        if update_output_json and os.path.exists(output_json):
+            with open(output_json, 'r', encoding='utf-8') as f:
+                existing = json.load(f)
+            existing_map = {(row.get('RefA'), row.get('RefBExact')): i for i, row in enumerate(existing)}
+            for row in results:
+                key = (row.get('RefA'), row.get('RefBExact'))
+                idx = existing_map.get(key)
+                if idx is not None:
+                    existing_status = existing[idx].get('Status', 'Pending')
+                    if existing_status != 'Pending':
+                        row['Status'] = existing_status
         with open(output_json, 'w', encoding='utf-8') as f:
             json.dump(results, f, ensure_ascii=False, indent=2)
     if llm_payloads_path:
@@ -498,6 +544,7 @@ if __name__ == "__main__":
     parser.add_argument('--context-words', type=int, default=40, help='Maximum LH words to use around the reference for matching')
     parser.add_argument('--no-symmetric-context', action='store_true', help='Disable symmetric context (use only words after the ref)')
     parser.add_argument('--output-json', type=str, help='Optional JSON dump of the link results')
+    parser.add_argument('--update-output-json', action='store_true', help='Only overwrite rows with Status="Pending" when writing output JSON')
     parser.add_argument('--llm-payloads-json', type=str, help='Optional path to write pending LLM payloads JSON')
     args = parser.parse_args()
     extract_links(
@@ -509,5 +556,6 @@ if __name__ == "__main__":
         args.context_words,
         symmetric_context=not args.no_symmetric_context,
         output_json=args.output_json,
-        llm_payloads_path=args.llm_payloads_json
+        llm_payloads_path=args.llm_payloads_json,
+        update_output_json=args.update_output_json
     )

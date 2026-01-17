@@ -516,6 +516,7 @@
             
             html += `<div class="field-value large" style="white-space: pre-wrap;">${highlightedSnippet}</div>`;
             html += '</div>';
+            
             html += '</div>';
             
             // Right column - RefB content
@@ -525,16 +526,12 @@
             html += `<div class="field-value large refb-display" style="white-space: pre-wrap;">${item.RefBExcerpt || ''}</div>`;
             html += `<textarea class="field-value large editable refb-edit" data-field="RefBExcerpt" style="display: none;">${item.RefBExcerpt || ''}</textarea>`;
             html += '<button class="btn refb-edit-btn" style="margin-top: 10px;" onclick="toggleRefBEdit()">ערוך</button>';
+            html += '</div>';            
+            html += '<div class="field-group">';
+            html += '<label class="field-label">RefBExact (editable)</label>';
+            html += `<input type="text" class="field-value editable" data-field="RefBExact" value="${item.RefBExact || ''}" onfocus="this.select()" onpaste="handleRefBExactPaste(event)" onchange="updateRefBExactLink(this)">`;
             html += '</div>';
-            html += '</div>';
             
-            html += '</div>'; // End two-column-layout
-            
-            // Bottom row - LLM section (right) and Status (left)
-            html += '<div class="bottom-row">';
-            
-            // Status section (left)
-            html += '<div class="status-section">';
             html += '<div class="field-group">';
             html += '<label class="field-label" style="font-weight: bold; font-size: 15px;">Status</label>';
             html += '<select class="field-value editable" data-field="Status" style="font-weight: bold;">';
@@ -546,45 +543,15 @@
             html += '</select>';
             html += '</div>';
             
-            html += '<div class="field-group">';
-            html += '<label class="field-label">RefBExact (editable)</label>';
-            html += `<input type="text" class="field-value editable" data-field="RefBExact" value="${item.RefBExact || ''}" onfocus="this.select()" onpaste="handleRefBExactPaste(event)" onchange="updateRefBExactLink(this)">`;
-            html += '</div>';
-            html += '</div>';
-            
-            // LLM section (right)
-            html += '<div class="llm-section">';
-            html += '<div class="field-group">';
-            html += '<label class="field-label">LLM Status</label>';
-            html += '<select class="field-value editable" data-field="LLMStatus">';
-            const llmOptions = ['not_needed', 'pending', 'approved', 'rejected'];
-            llmOptions.forEach(opt => {
-                const selected = opt === item.LLMStatus ? 'selected' : '';
-                html += `<option value="${opt}" ${selected}>${opt}</option>`;
-            });
-            html += '</select>';
-            html += '</div>';
-            
-            html += '<div class="field-group">';
-            html += '<label class="field-label">LLM Confidence</label>';
-            html += `<input type="text" class="field-value editable" data-field="LLMConfidence" value="${item.LLMConfidence || ''}">`;
-            html += '</div>';
-            
-            html += '<div class="field-group">';
-            html += '<label class="field-label">LLM Excerpt</label>';
-            html += `<textarea class="field-value editable" data-field="LLMExcerpt">${item.LLMExcerpt || ''}</textarea>`;
-            html += '</div>';
-            html += '</div>';
-            
-            html += '</div>'; // End bottom-row
-            
-            // Actions
             html += `
-                <div class="actions">
+                <div class="actions" style="margin-top: 20px; padding-top: 0; border-top: none;">
                     <button class="btn btn-save" onclick="saveChanges()">שמור שינויים</button>
                     <button class="btn btn-cancel" onclick="cancelChanges()">בטל שינויים</button>
                 </div>
             `;
+                        html += '</div>';
+            
+            html += '</div>'; // End two-column-layout
             
             document.getElementById('content').innerHTML = html;
             
