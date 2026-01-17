@@ -23,6 +23,14 @@ jobs:
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git config --global user.name "github-actions[bot]"
           
+          # Remove large data files before pushing
+          git rm -r --cached data/ || true
+          git rm --cached tmp_lh_llm.json || true
+          git rm --cached tmp_lh_links.json.backup || true
+          git rm --cached tmp_lh_links.csv || true
+          git rm --cached *.csv || true
+          git commit -m "Remove large data files for HF deployment" || true
+          
           # Add Hugging Face remote
           git remote add hf https://huggingface.co/spaces/dn-9281411/linking-lh || true
           
