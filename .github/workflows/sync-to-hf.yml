@@ -23,16 +23,29 @@ jobs:
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git config --global user.name "github-actions[bot]"
           
-          # Remove large data files before pushing
-          git rm -r --cached data/ || true
-          git rm --cached tmp_lh_llm.json || true
-          git rm --cached tmp_lh_links.json.backup || true
-          git rm --cached tmp_lh_links.csv || true
-          git rm --cached *.csv || true
-          git commit -m "Remove large data files for HF deployment" || true
+          # Create a clean deployment directory
+          mkdir -p ../hf-deploy
           
-          # Add Hugging Face remote
-          git remote add hf https://huggingface.co/spaces/dn-9281411/linking-lh || true
+          # Copy only necessary files for deployment
+          cp app.py ../hf-deploy/
+          cp json-viewer.html ../hf-deploy/
+          cp requirements.txt ../hf-deploy/
+          cp Dockerfile ../hf-deploy/
+          cp HF_README.md ../hf-deploy/README.md
+          cp .hfignore ../hf-deploy/.gitignore || true
           
-          # Push to Hugging Face
+          # Create empty tmp_lh_links.json if it doesn't exist
+          echo "[]" > ../hf-deploy/tmp_lh_links.json
+          
+          # Initialize a fresh git repo
+          cd ../hf-deploy
+          git init
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          
+          # Add all files and commit
+          git add .
+          git commit -m "Deploy to Hugging Face"
+          
+          # Force push to Hugging Face
           git push https://user:$HF_TOKEN@huggingface.co/spaces/dn-9281411/linking-lh main:main --force

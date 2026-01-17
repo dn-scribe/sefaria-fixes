@@ -1,0 +1,8 @@
+data/
+*.csv
+tmp_lh_llm.json
+tmp_lh_links.json.backup
+__pycache__/
+*.pyc
+*.pyo
+*.lock
