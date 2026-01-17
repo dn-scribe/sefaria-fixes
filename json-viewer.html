@@ -381,8 +381,15 @@
             <div class="header-top">
                 <h1>סקירת קישורים - Likutei Halakhot</h1>
                 <div class="file-upload">
-                    <input type="file" id="fileInput" accept=".json" onchange="handleFileUpload(event)">
-                    <label for="fileInput" class="btn btn-upload">📁 בחר קובץ JSON</label>
+                    <input type="file" id="serverFileInput" accept=".json" onchange="uploadFileToServer(event)" style="display: none;">
+                    <button class="btn btn-upload" id="uploadBtn" onclick="document.getElementById('serverFileInput').click()" disabled>
+                        📤 Upload JSON
+                    </button>
+                    <button class="btn btn-upload" id="downloadBtn" onclick="downloadFromServer()" disabled style="margin-right: 10px;">
+                        📥 Download JSON
+                    </button>
+                    <input type="file" id="fileInput" accept=".json" onchange="handleFileUpload(event)" style="display: none;">
+                    <label for="fileInput" class="btn btn-upload" style="margin-right: 10px;">📁 בחר קובץ JSON</label>
                 </div>
             </div>
             <div class="navigation">
@@ -429,6 +436,9 @@
         let currentFileHandle = null;
         let filteredIndices = [];
         let currentFilteredIndex = -1;
+        let username = '';
+        let dataVersion = null;
+        let isAdmin = false;
 
         // Handle file upload
         async function handleFileUpload(event) {
@@ -458,19 +468,155 @@
             reader.readAsText(file);
         }
 
+        // Check if user is admin
+        async function checkAdminStatus() {
+            try {
+                const response = await fetch('/health');
+                const result = await response.json();
+                const adminUser = result.admin_user || 'danny';
+                isAdmin = (username === adminUser);
+                
+                // Enable/disable upload and download buttons
+                const uploadBtn = document.getElementById('uploadBtn');
+                const downloadBtn = document.getElementById('downloadBtn');
+                
+                if (uploadBtn && downloadBtn) {
+                    uploadBtn.disabled = !isAdmin;
+                    downloadBtn.disabled = !isAdmin;
+                    
+                    if (!isAdmin) {
+                        uploadBtn.title = `Only ${adminUser} can upload files`;
+                        downloadBtn.title = `Only ${adminUser} can download files`;
+                    } else {
+                        uploadBtn.title = 'Upload new JSON file to server';
+                        downloadBtn.title = 'Download current JSON file from server';
+                    }
+                }
+            } catch (error) {
+                console.error('Failed to check admin status:', error);
+            }
+        }
+        
+        // Upload file to server (admin only)
+        async function uploadFileToServer(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            
+            if (!isAdmin) {
+                alert('Only admin users can upload files');
+                return;
+            }
+            
+            try {
+                const formData = new FormData();
+                formData.append('file', file);
+                
+                const response = await fetch('/upload', {
+                    method: 'POST',
+                    headers: {
+                        'X-Username': username
+                    },
+                    body: formData
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok) {
+                    alert(`File uploaded successfully! ${result.items} items loaded.`);
+                    await loadDataFromServer();
+                } else {
+                    alert(`Upload failed: ${result.detail || 'Unknown error'}`);
+                }
+            } catch (error) {
+                console.error('Upload error:', error);
+                alert('Failed to upload file. Check console for details.');
+            }
+            
+            // Reset file input
+            event.target.value = '';
+        }
+        
+        // Download file from server (admin only)
+        async function downloadFromServer() {
+            if (!isAdmin) {
+                alert('Only admin users can download files');
+                return;
+            }
+            
+            try {
+                const response = await fetch('/download', {
+                    headers: {
+                        'X-Username': username
+                    }
+                });
+                
+                if (response.ok) {
+                    const blob = await response.blob();
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
+                    a.download = `tmp_lh_links_${timestamp}.json`;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    window.URL.revokeObjectURL(url);
+                } else {
+                    const result = await response.json();
+                    alert(`Download failed: ${result.detail || 'Unknown error'}`);
+                }
+            } catch (error) {
+                console.error('Download error:', error);
+                alert('Failed to download file. Check console for details.');
+            }
+        }
+        
         // Load data from server (for server mode)
         async function loadDataFromServer() {
+            // Prompt for username
+            if (!username) {
+                username = prompt('Enter your username:', '');
+                if (!username) {
+                    alert('Username is required to use the application');
+                    return;
+                }
+            }
+            
             try {
-                const response = await fetch('/data');
-                data = await response.json();
+                const response = await fetch('/data', {
+                    headers: {
+                        'X-Username': username
+                    }
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                
+                const result = await response.json();
+                data = result.data || result;
+                dataVersion = result.version;
+                
                 if (!Array.isArray(data)) {
                     throw new Error('Invalid data format');
                 }
+                
                 displayItem(0);
                 updateNavigation();
                 updateFilters();
-                // Hide file upload section in server mode
-                document.querySelector('.file-upload').style.display = 'none';
+                
+                // Hide local file picker in server mode (keep upload/download buttons visible)
+                const localFilePicker = document.getElementById('fileInput');
+                const localFileLabel = document.querySelector('label[for="fileInput"]');
+                if (localFilePicker) localFilePicker.style.display = 'none';
+                if (localFileLabel) localFileLabel.style.display = 'none';
+                
+                // Update header with username
+                const header = document.querySelector('.header h1');
+                header.textContent = `סקירת קישורים - Likutei Halakhot (User: ${username})`;
+                
+                // Check admin status and enable/disable buttons
+                checkAdminStatus();
             } catch (error) {
                 console.error('Server mode not available:', error);
                 // File upload mode will be used instead
@@ -876,13 +1022,27 @@
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/json',
+                            'X-Username': username,
+                            'X-Data-Version': dataVersion
                         },
                         body: jsonString
                     });
                     
+                    if (response.status === 409) {
+                        // Conflict detected
+                        const result = await response.json();
+                        if (confirm('השינויים שלך מתנגשים עם שינויים של משתמש אחר. האם לטעון מחדש את הנתונים? (שינויים שלא נשמרו יאבדו)')) {
+                            await loadDataFromServer();
+                        }
+                        return;
+                    }
+                    
                     if (response.ok) {
                         const result = await response.json();
                         console.log('File saved to server:', result);
+                        
+                        // Update version
+                        dataVersion = result.version;
                         
                         // Show success indicator
                         const indicator = document.getElementById('saveIndicator');

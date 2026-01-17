@@ -1,0 +1,115 @@
+{
+  "RefA": {
+    "name": "Reference A",
+    "type": "text",
+    "location": "0.0",
+    "size": {"w": 50, "h": 1},
+    "help": "First reference citation"
+  },
+  "RefALink": {
+    "name": "Link A",
+    "url": true,
+    "location": "0.1",
+    "size": {"w": 50, "h": 1}
+  },
+  "RefB": {
+    "name": "Reference B",
+    "type": "text",
+    "location": "1.0",
+    "size": {"w": 50, "h": 1},
+    "help": "Second reference citation"
+  },
+  "RefBLink": {
+    "name": "Link B",
+    "url": true,
+    "location": "1.1",
+    "size": {"w": 50, "h": 1}
+  },
+  "Snippet": {
+    "name": "Snippet",
+    "type": "textarea",
+    "location": "2.0",
+    "size": {"w": 30, "h": 4},
+    "normalize_whitespace": false,
+    "lang": "he"
+  },
+  "RefBExact": {
+    "name": "Exact Reference B",
+    "type": "text",
+    "location": "3.0",
+    "size": {"w": 50, "h": 1}
+  },
+  "RefBExactLink": {
+    "name": "Exact Link B",
+    "url": true,
+    "location": "3.1",
+    "size": {"w": 50, "h": 1}
+  },
+  "RefBExcerpt": {
+    "name": "Excerpt",
+    "type": "textarea",
+    "location": "2.1",
+    "size": {"w": 30, "h": 4},
+    "normalize_whitespace": false,
+    "lang": "he"
+  },
+  "Status": {
+    "name": "Status",
+    "allowed_values": ["Pending", "Approved", "Rejected", "In Review"],
+    "default": "Pending",
+    "location": "4.0",
+    "confirm_on_change": true
+  },
+  "MatchType": {
+    "name": "Match Type",
+    "type": "text",
+    "location": "4.1",
+    "size": {"w": 20, "h": 1}
+  },
+  "k_n_ref": {
+    "name": "K of N Reference",
+    "type": "textarea",
+    "location": "5.0",
+    "size": {"w": 80, "h": 2},
+    "lang": "he"
+  },
+  "MatchedWords": {
+    "name": "Matched Words",
+    "type": "textarea",
+    "location": "5.1",
+    "size": {"w": 80, "h": 2},
+    "lang": "he"
+  },
+  "DeterministicScore": {
+    "name": "Deterministic Score",
+    "type": "text",
+    "location": "6.0",
+    "size": {"w": 20, "h": 1},
+    "help": "Match score ratio"
+  },
+  "LLMStatus": {
+    "name": "LLM Status",
+    "allowed_values": ["not_needed", "needed", "in_progress", "completed"],
+    "default": "not_needed",
+    "location": "7.0"
+  },
+  "LLMParagraph": {
+    "name": "LLM Paragraph",
+    "type": "textarea",
+    "location": "7.1",
+    "size": {"w": 80, "h": 3}
+  },
+  "LLMConfidence": {
+    "name": "LLM Confidence",
+    "type": "text",
+    "location": "8.0",
+    "size": {"w": 20, "h": 1}
+  },
+  "LLMExcerpt": {
+    "name": "LLM Excerpt",
+    "type": "textarea",
+    "location": "8.1",
+    "size": {"w": 80, "h": 3},
+    "lang": "he"
+  }
+}

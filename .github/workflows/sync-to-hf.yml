@@ -1,0 +1,30 @@
+name: Sync to Hugging Face
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  sync-to-huggingface:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+          lfs: true
+
+      - name: Push to Hugging Face Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global user.name "github-actions[bot]"
+          
+          # Add Hugging Face remote
+          git remote add hf https://huggingface.co/spaces/dn-9281411/linking-lh || true
+          
+          # Push to Hugging Face
+          git push https://user:$HF_TOKEN@huggingface.co/spaces/dn-9281411/linking-lh main:main --force
