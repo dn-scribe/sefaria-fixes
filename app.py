@@ -62,8 +62,10 @@ def save_data(data: List[Dict[str, Any]]) -> None:
     """Save data to JSON file with file locking"""
     file_lock = FileLock(str(LOCK_FILE))
     with file_lock:
+        print(f"Saving data to: {DATA_FILE.absolute()}")
         with open(DATA_FILE, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
+        print(f"Data saved successfully. File size: {DATA_FILE.stat().st_size} bytes")
         # Update version tracking
         data_version["hash"] = compute_hash(data)
         data_version["timestamp"] = datetime.now().isoformat()
@@ -180,7 +182,8 @@ async def upload_file(
         "status": "success",
         "message": f"File uploaded successfully by {username}",
         "items": len(data),
-        "version": data_version["hash"]
+        "version": data_version["hash"],
+        "saved_to": str(DATA_FILE.absolute())
     }
 
 
@@ -196,11 +199,13 @@ async def download_file(username: Optional[str] = Header(None, alias="X-Username
     if not DATA_FILE.exists():
         raise HTTPException(status_code=404, detail="Data file not found")
     
-    return FileResponse(
+    response = FileResponse(
         path=DATA_FILE,
         filename=f"tmp_lh_links_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
         media_type="application/json"
     )
+    response.headers["X-File-Path"] = str(DATA_FILE.absolute())
+    return response
 
 
 @app.get("/health")
@@ -221,4 +226,6 @@ if __name__ == "__main__":
     print(f"Starting server on port {PORT}")
     print(f"Admin user: {ADMIN_USER}")
     print(f"Data folder: {DATA_FOLDER.absolute()}")
+    print(f"Data folder writable: {os.access(DATA_FOLDER, os.W_OK)}")
+    print(f"Data file path: {DATA_FILE.absolute()}")
     uvicorn.run(app, host="0.0.0.0", port=PORT)

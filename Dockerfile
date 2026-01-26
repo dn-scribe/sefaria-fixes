@@ -17,8 +17,7 @@ EXPOSE 7860
 # Set environment variables
 ENV PORT=7860
 ENV ADMIN_USER=danny
-ENV DATA_FOLDER=/app
-ENV DATA_FOLDER=/app
+ENV DATA_FOLDER=/data
 
 # Run the application
 CMD ["python", "app.py"]

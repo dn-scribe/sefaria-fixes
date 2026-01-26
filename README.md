@@ -12,6 +12,8 @@ app_port: 7860
 
 A collaborative web application for reviewing and editing JSON link data with multi-user support.
 
+**🚀 Live App:** https://dn-9281411-linking-lh.hf.space/
+
 ## Features
 
 - 🔄 Real-time collaborative editing with conflict detection
