@@ -211,11 +211,29 @@ async def download_file(username: Optional[str] = Header(None, alias="X-Username
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
+    # Try to get git commit hash
+    commit_hash = os.getenv("GIT_COMMIT", "unknown")
+    if commit_hash == "unknown":
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                capture_output=True,
+                text=True,
+                timeout=1
+            )
+            if result.returncode == 0:
+                commit_hash = result.stdout.strip()
+        except Exception:
+            pass
+    
     return {
         "status": "healthy",
         "data_file_exists": DATA_FILE.exists(),
         "admin_user": ADMIN_USER,
-        "timestamp": datetime.now().isoformat()
+        "timestamp": datetime.now().isoformat(),
+        "commit": commit_hash,
+        "data_folder": str(DATA_FOLDER.absolute())
     }
 
 

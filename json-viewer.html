@@ -371,6 +371,23 @@
                 opacity: 1;
             }
         }
+        
+        .footer {
+            background: #f5f5f5;
+            padding: 15px 20px;
+            text-align: center;
+            font-size: 12px;
+            color: #666;
+            border-top: 1px solid #ddd;
+        }
+        
+        .footer-info {
+            margin: 5px 0;
+        }
+        
+        .footer-info strong {
+            color: #333;
+        }
     </style>
 </head>
 <body>
@@ -423,8 +440,17 @@
         
         <div class="content" id="content">
             <p style="text-align: center; padding: 40px; color: #666;">
-                אנא בחר קובץ JSON כדי להתחיל
+                אנא בחר קובץ JSON כדי להתחיל<br>
+                <br>
+                <a href="https://dn-9281411-linking-lh.hf.space/" target="_blank" style="color: #2196F3; text-decoration: none; font-size: 14px;">
+                    🚀 Open Live App on Hugging Face
+                </a>
             </p>
+        </div>
+        
+        <div class="footer">
+            <div class="footer-info" id="filePathInfo"></div>
+            <div class="footer-info" id="commitInfo">Loading version info...</div>
         </div>
     </div>
 
@@ -522,7 +548,16 @@
                 const result = await response.json();
                 
                 if (response.ok) {
-                    alert(`File uploaded successfully! ${result.items} items loaded.`);
+                    const message = `File uploaded successfully! ${result.items} items loaded.`;
+                    const pathInfo = result.saved_to ? `\nSaved to: ${result.saved_to}` : '';
+                    alert(message + pathInfo);
+                    
+                    // Update footer with file path
+                    if (result.saved_to) {
+                        document.getElementById('filePathInfo').innerHTML = 
+                            `<strong>Data file location:</strong> ${result.saved_to}`;
+                    }
+                    
                     await loadDataFromServer();
                 } else {
                     alert(`Upload failed: ${result.detail || 'Unknown error'}`);
@@ -551,6 +586,7 @@
                 });
                 
                 if (response.ok) {
+                    const filePath = response.headers.get('X-File-Path');
                     const blob = await response.blob();
                     const url = window.URL.createObjectURL(blob);
                     const a = document.createElement('a');
@@ -561,6 +597,13 @@
                     a.click();
                     document.body.removeChild(a);
                     window.URL.revokeObjectURL(url);
+                    
+                    // Show file path info
+                    if (filePath) {
+                        alert(`File downloaded from: ${filePath}`);
+                        document.getElementById('filePathInfo').innerHTML = 
+                            `<strong>Data file location:</strong> ${filePath}`;
+                    }
                 } else {
                     const result = await response.json();
                     alert(`Download failed: ${result.detail || 'Unknown error'}`);
@@ -1100,11 +1143,31 @@
 
         // Initialize on page load
         window.onload = function() {
+            // Load commit info
+            loadCommitInfo();
+            
             // Try to load from server first
             loadDataFromServer().catch(() => {
                 console.log('JSON Viewer loaded. Please select a file to begin.');
             });
         };
+        
+        // Load git commit information
+        async function loadCommitInfo() {
+            try {
+                const response = await fetch('/health');
+                if (response.ok) {
+                    const data = await response.json();
+                    // Try to get commit from environment or build info
+                    const commitInfo = data.commit || data.version || 'unknown';
+                    document.getElementById('commitInfo').innerHTML = 
+                        `<strong>Version:</strong> ${commitInfo.substring(0, 8)} | <strong>Updated:</strong> ${new Date(data.timestamp).toLocaleString()}`;
+                }
+            } catch (error) {
+                console.log('Could not load commit info:', error);
+                document.getElementById('commitInfo').textContent = '';
+            }
+        }
     </script>
 </body>
 </html>
