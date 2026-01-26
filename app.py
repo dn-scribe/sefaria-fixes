@@ -18,8 +18,9 @@ import hashlib
 app = FastAPI(title="JSON Link Viewer & Editor")
 
 # Configuration
-DATA_FILE = Path("tmp_lh_links.json")
-LOCK_FILE = Path("tmp_lh_links.json.lock")
+DATA_FOLDER = Path(os.getenv("DATA_FOLDER", "."))
+DATA_FILE = DATA_FOLDER / "tmp_lh_links.json"
+LOCK_FILE = DATA_FOLDER / "tmp_lh_links.json.lock"
 ADMIN_USER = os.getenv("ADMIN_USER", "danny")
 PORT = int(os.getenv("PORT", "7860"))
 
@@ -215,6 +216,9 @@ async def health_check():
 
 if __name__ == "__main__":
     import uvicorn
+    # Ensure data folder exists
+    DATA_FOLDER.mkdir(parents=True, exist_ok=True)
     print(f"Starting server on port {PORT}")
     print(f"Admin user: {ADMIN_USER}")
+    print(f"Data folder: {DATA_FOLDER.absolute()}")
     uvicorn.run(app, host="0.0.0.0", port=PORT)
