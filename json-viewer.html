@@ -704,10 +704,42 @@
             let matchedWords = (item.MatchedWords || '').split(' ').filter(w => w.trim());
             let highlightedSnippet = snippetText;
             
-            // First, highlight "בסימן" and the 4 words following it with green bold
-            // Match "בסימן" followed by up to 4 Hebrew words (including nikud and punctuation)
-            const simanPattern = /(סימן(?:\s+[\u05D0-\u05EA\u0591-\u05C7"׳״'()]+){0,4})/g;
-            highlightedSnippet = highlightedSnippet.replace(simanPattern, '<span style="background-color: #c8e6c9; font-weight: bold;">$1</span>');
+            // Extract the chapter number from RefB (e.g., "Likutei Moharan.61" -> 61)
+            let refBChapter = null;
+            if (item.RefB) {
+                const refBParts = item.RefB.split('.');
+                if (refBParts.length > 1) {
+                    refBChapter = parseInt(refBParts[refBParts.length - 1]);
+                }
+            }
+            
+            // Hebrew gematria function to convert Hebrew numbers
+            function hebrewGematria(str) {
+                const gematriaMap = {
+                    'א': 1, 'ב': 2, 'ג': 3, 'ד': 4, 'ה': 5, 'ו': 6, 'ז': 7, 'ח': 8, 'ט': 9,
+                    'י': 10, 'כ': 20, 'ך': 20, 'ל': 30, 'מ': 40, 'ם': 40, 'נ': 50, 'ן': 50,
+                    'ס': 60, 'ע': 70, 'פ': 80, 'ף': 80, 'צ': 90, 'ץ': 90, 'ק': 100, 'ר': 200,
+                    'ש': 300, 'ת': 400
+                };
+                let total = 0;
+                for (let c of str) {
+                    total += gematriaMap[c] || 0;
+                }
+                return total;
+            }
+            
+            // Highlight "בסימן" and following words - dark green if matches RefB chapter, light green otherwise
+            const simanPattern = /(סימן\s+([\u05D0-\u05EA\u0591-\u05C7"׳״'()]+)(?:\s+[\u05D0-\u05EA\u0591-\u05C7"׳״'()]+){0,3})/g;
+            highlightedSnippet = highlightedSnippet.replace(simanPattern, (match, fullMatch, simanNumber) => {
+                // Extract just the Hebrew letters from the siman number
+                const cleanSiman = simanNumber.replace(/[\u0591-\u05C7"׳״'()]/g, '');
+                const simanValue = hebrewGematria(cleanSiman);
+                
+                // Use dark green if it matches the RefB chapter, light green otherwise
+                const bgColor = (refBChapter && simanValue === refBChapter) ? '#2e7d32' : '#c8e6c9';
+                const textColor = (refBChapter && simanValue === refBChapter) ? 'white' : 'inherit';
+                return `<span style="background-color: ${bgColor}; color: ${textColor}; font-weight: bold;">${fullMatch}</span>`;
+            });
             
             // Then highlight each matched word with yellow
             matchedWords.forEach(word => {
