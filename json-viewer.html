@@ -699,11 +699,26 @@
             html += '<div class="field-group">';
             html += '<label class="field-label">Snippet (Likutei Halakhot)</label>';
             
-            // Highlight words containing "סימן" in the snippet
-            let snippetText = item.Snippet || '';
-            let highlightedSnippet = snippetText.replace(/(\S*סימן\S*)/g, '<span class="highlight-siman">$1</span>');
+            // Highlight matched words in the snippet
+            let snippetText = item.LHSnippet || '';
+            let matchedWords = (item.MatchedWords || '').split(' ').filter(w => w.trim());
+            let highlightedSnippet = snippetText;
+            
+            // First, highlight "בסימן" and the 4 words following it with green bold
+            // Match "בסימן" followed by up to 4 Hebrew words (including nikud and punctuation)
+            const simanPattern = /(בסימן(?:\s+[\u05D0-\u05EA\u0591-\u05C7"׳״'()]+){0,4})/g;
+            highlightedSnippet = highlightedSnippet.replace(simanPattern, '<span style="background-color: #c8e6c9; font-weight: bold;">$1</span>');
+            
+            // Then highlight each matched word with yellow
+            matchedWords.forEach(word => {
+                if (word) {
+                    const regex = new RegExp('(' + word + ')', 'g');
+                    highlightedSnippet = highlightedSnippet.replace(regex, '<span class="highlight-siman">$1</span>');
+                }
+            });
             
             html += `<div class="field-value large" style="white-space: pre-wrap;">${highlightedSnippet}</div>`;
+            html += '<button class="btn btn-verify-next" style="margin-top: 15px; padding: 12px 24px; font-size: 16px; font-weight: bold; background-color: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer; width: 100%;" onclick="verifyAndNext()">✓ Mark Verified and Save &gt;&gt;</button>';
             html += '</div>';
             
             html += '</div>';
@@ -712,8 +727,19 @@
             html += '<div class="column">';
             html += '<div class="field-group">';
             html += `<label class="field-label">RefB: <a href="${item.RefBLink}" target="_blank" class="link">${item.RefB}</a></label>`;
-            html += `<div class="field-value large refb-display" style="white-space: pre-wrap;">${item.RefBExcerpt || ''}</div>`;
-            html += `<textarea class="field-value large editable refb-edit" data-field="RefBExcerpt" style="display: none;">${item.RefBExcerpt || ''}</textarea>`;
+            
+            // Highlight matched words in LM snippet
+            let lmSnippetText = item.LMSnippet || '';
+            let highlightedLM = lmSnippetText;
+            matchedWords.forEach(word => {
+                if (word) {
+                    const regex = new RegExp('(' + word + ')', 'g');
+                    highlightedLM = highlightedLM.replace(regex, '<span class="highlight-siman">$1</span>');
+                }
+            });
+            
+            html += `<div class="field-value large refb-display" style="white-space: pre-wrap;">${highlightedLM}</div>`;
+            html += `<textarea class="field-value large editable refb-edit" data-field="LMSnippet" style="display: none;">${lmSnippetText}</textarea>`;
             html += '<button class="btn refb-edit-btn" style="margin-top: 10px;" onclick="toggleRefBEdit()">ערוך</button>';
             html += '</div>';            
             html += '<div class="field-group">';
@@ -898,9 +924,26 @@
             }, 100);
         }
 
+        function verifyAndNext() {
+            // Set status to verified
+            const statusSelect = document.querySelector('select[data-field="Status"]');
+            if (statusSelect) {
+                statusSelect.value = 'verified';
+                data[currentIndex].Status = 'verified';
+            }
+            
+            // Save changes
+            saveChanges();
+            
+            // Wait a bit for save to complete, then move to next
+            setTimeout(() => {
+                nextItem();
+            }, 100);
+        }
+
         function toggleSnippetEdit() {
             const displayDiv = document.querySelector('.column .field-value.large:not(textarea)');
-            const editArea = document.querySelector('.column textarea[data-field="Snippet"]');
+            const editArea = document.querySelector('.column textarea[data-field="LHSnippet"]');
             const button = document.querySelector('.column button');
             
             if (editArea.style.display === 'none') {
@@ -1004,8 +1047,8 @@
                         const cleanLink = url.origin + url.pathname;
                         data[currentIndex].RefBExactLink = cleanLink;
                         
-                        // Empty the RefBExcerpt field
-                        data[currentIndex].RefBExcerpt = '';
+                        // Empty the LMSnippet field
+                        data[currentIndex].LMSnippet = '';
                         
                         // Change status to verified
                         data[currentIndex].Status = 'verified';
@@ -1031,7 +1074,7 @@
                         
                         console.log('✓ Extracted RefBExact:', ref);
                         console.log('✓ Clean link:', cleanLink);
-                        console.log('✓ Cleared RefBExcerpt');
+                        console.log('✓ Cleared LMSnippet');
                         console.log('✓ Status set to verified');
                         console.log('✓ Updated main link button');
                         

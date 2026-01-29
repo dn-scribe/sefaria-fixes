@@ -59,12 +59,12 @@ def tokenize(text: str) -> List[str]:
 
 
 def build_context_tokens(text: str, match_start: int, match_end: int, context_words: int,
-                         symmetric: bool = True) -> Tuple[List[str], str]:
+                         symmetric: bool = True) -> List[str]:
+    """Build context tokens for matching algorithm only."""
     if context_words <= 0:
         context_words = 1
     before_tokens = tokenize(text[:match_start])
     after_tokens = tokenize(text[match_end:])
-    ref_tokens = tokenize(text[match_start:match_end])
     if symmetric:
         pre_target = context_words // 2
         post_target = context_words - pre_target
@@ -80,9 +80,7 @@ def build_context_tokens(text: str, match_start: int, match_end: int, context_wo
         pre_tokens = []
         post_tokens = after_tokens[:context_words]
     context_tokens = pre_tokens + post_tokens
-    snippet_tokens = pre_tokens + ref_tokens + post_tokens
-    snippet = ' '.join(snippet_tokens).strip()
-    return context_tokens, snippet
+    return context_tokens
 
 
 @dataclass
@@ -167,22 +165,27 @@ class LikuteiMoharanIndex:
 
 
 def find_k_of_n_match(paragraphs: List[ParagraphEntry], context_tokens: List[str],
-                      k: int, n: int) -> Optional[Dict[str, Any]]:
+                      k: int, n: int, min_word_length: int = 1) -> Optional[Dict[str, Any]]:
     if not paragraphs or not context_tokens:
         return None
+    
+    # Filter context tokens by minimum word length
+    filtered_context = [w for w in context_tokens if len(w) >= min_word_length]
+    
     windows: List[List[str]] = []
-    for idx in range(len(context_tokens)):
-        window = context_tokens[idx:idx + n]
+    for idx in range(len(filtered_context)):
+        window = filtered_context[idx:idx + n]
         if len(window) >= max(k, 1):
             windows.append(window)
     if not windows:
-        windows = [context_tokens]
+        windows = [filtered_context]
 
     best_match = None
     for paragraph in paragraphs:
         if not paragraph.tokens:
             continue
-        token_set = paragraph.token_set
+        # Filter paragraph tokens by minimum word length
+        token_set = {w for w in paragraph.token_set if len(w) >= min_word_length}
         for window in windows:
             matched_words: List[str] = []
             unique_words = set()
@@ -247,7 +250,7 @@ def find_k_of_n_match(paragraphs: List[ParagraphEntry], context_tokens: List[str
 # Main extraction function
 def extract_links(refs_json, output_csv, lm_json, k_of_n, n_window, context_words,
                   symmetric_context=True, output_json=None, llm_payloads_path=None,
-                  update_output_json=False):
+                  update_output_json=False, min_word_length=1):
     print(f"Loading refs from {refs_json} ...")
     with open(refs_json, 'r', encoding='utf-8') as f:
         data = json.load(f)
@@ -334,18 +337,22 @@ def extract_links(refs_json, output_csv, lm_json, k_of_n, n_window, context_word
                 refB = f"{refB_prefix}.{siman_num}"
                 refB_link = sefaria_link(refB)
                 chapter_data = lm_index.get_chapter(lm_part, siman_num)
-                context_tokens, snippet_text = build_context_tokens(
+                # Get context tokens for matching algorithm
+                context_tokens = build_context_tokens(
                     node,
                     match.start(),
                     match.end(),
                     context_words,
                     symmetric=symmetric_context
                 )
+                # Snippet is the full LH paragraph for display
+                lh_snippet = node
                 deterministic_match = find_k_of_n_match(
                     chapter_data.get('paragraphs', []),
                     context_tokens,
                     k_of_n,
-                    n_window
+                    n_window,
+                    min_word_length
                 ) if chapter_data else None
                 refB_exact = ''
                 refB_exact_link = ''
@@ -367,7 +374,7 @@ def extract_links(refs_json, output_csv, lm_json, k_of_n, n_window, context_word
                         'ref_b_link': refB_link,
                         'lm_part': lm_part,
                         'lm_chapter': siman_num,
-                        'lh_text': snippet_text,
+                        'lh_text': lh_snippet,
                         'lm_chapter_text': chapter_data.get('full_text', ''),
                         'lm_chapter_structured': chapter_data.get('structured'),
                         'prompt_instructions': (
@@ -412,10 +419,10 @@ def extract_links(refs_json, output_csv, lm_json, k_of_n, n_window, context_word
                     'RefALink': refA_link,
                     'RefB': refB,
                     'RefBLink': refB_link,
-                    'Snippet': snippet_text,
+                    'LHSnippet': lh_snippet,
                     'RefBExact': refB_exact,
                     'RefBExactLink': refB_exact_link,
-                    'RefBExcerpt': refB_excerpt,
+                    'LMSnippet': refB_excerpt,
             'MatchType': match_type,
             'k_n_ref': k_n_ref,
             'MatchedWords': matched_words_value,
@@ -435,23 +442,17 @@ def extract_links(refs_json, output_csv, lm_json, k_of_n, n_window, context_word
                 siman_clean = siman_text.replace('(', '').replace(')', '').strip()
                 siman_num = hebrew_gematria(siman_clean)
                 refB = f"Likutei Moharan.{siman_num}"
-                _, snippet_text = build_context_tokens(
-                    node,
-                    match.start(),
-                    match.end(),
-                    context_words,
-                    symmetric=symmetric_context
-                )
+                lh_snippet = node
 
                 results.append({
                     'RefA': refA,
                     'RefALink': refA_link,
                     'RefB': refB,
                     'RefBLink': sefaria_link(refB),
-                    'Snippet': snippet_text,
+                    'LHSnippet': lh_snippet,
                     'RefBExact': '',
                     'RefBExactLink': '',
-                    'RefBExcerpt': '',
+                    'LMSnippet': '',
                     'MatchType': 'maamar_with_siman',
                     'k_n_ref': '',
                     'DeterministicScore': '',
@@ -468,23 +469,17 @@ def extract_links(refs_json, output_csv, lm_json, k_of_n, n_window, context_word
             for match in maamar_matches:
                 if match.start() in maamar_with_siman_positions:
                     continue
-                _, snippet_text = build_context_tokens(
-                    node,
-                    match.start(),
-                    match.end(),
-                    context_words,
-                    symmetric=symmetric_context
-                )
+                lh_snippet = node
 
                 results.append({
                     'RefA': refA,
                     'RefALink': refA_link,
                     'RefB': "Likutei Moharan.[PLACEHOLDER]",
                     'RefBLink': sefaria_link("Likutei Moharan.[PLACEHOLDER]"),
-                    'Snippet': snippet_text,
+                    'LHSnippet': lh_snippet,
                     'RefBExact': '',
                     'RefBExactLink': '',
-                    'RefBExcerpt': '',
+                    'LMSnippet': '',
                     'MatchType': 'maamar_without_siman',
                     'k_n_ref': '',
                     'DeterministicScore': '',
@@ -502,9 +497,9 @@ def extract_links(refs_json, output_csv, lm_json, k_of_n, n_window, context_word
 
     print(f"Writing {len(results)} links to {output_csv} ...")
     fieldnames = [
-        'RefA', 'RefALink', 'RefB', 'RefBLink', 'Snippet',
+        'RefA', 'RefALink', 'RefB', 'RefBLink', 'LHSnippet', 'LMSnippet',
         'MatchType', 'k_n_ref', 'MatchedWords', 'DeterministicScore',
-        'RefBExact', 'RefBExactLink', 'RefBExcerpt',
+        'RefBExact', 'RefBExactLink',
         'LLMStatus', 'LLMParagraph', 'LLMConfidence', 'LLMExcerpt',
         'Status'
     ]
@@ -518,14 +513,19 @@ def extract_links(refs_json, output_csv, lm_json, k_of_n, n_window, context_word
         if update_output_json and os.path.exists(output_json):
             with open(output_json, 'r', encoding='utf-8') as f:
                 existing = json.load(f)
-            existing_map = {(row.get('RefA'), row.get('RefBExact')): i for i, row in enumerate(existing)}
+            # Use LHSnippet as part of key to uniquely identify each link occurrence
+            existing_map = {(row.get('RefA'), row.get('RefBExact'), row.get('LHSnippet')): i for i, row in enumerate(existing)}
+            preserved_count = 0
             for row in results:
-                key = (row.get('RefA'), row.get('RefBExact'))
+                key = (row.get('RefA'), row.get('RefBExact'), row.get('LHSnippet'))
                 idx = existing_map.get(key)
                 if idx is not None:
                     existing_status = existing[idx].get('Status', 'Pending')
                     if existing_status != 'Pending':
                         row['Status'] = existing_status
+                        preserved_count += 1
+            if preserved_count > 0:
+                print(f"Preserved {preserved_count} non-Pending statuses from existing JSON")
         with open(output_json, 'w', encoding='utf-8') as f:
             json.dump(results, f, ensure_ascii=False, indent=2)
     if llm_payloads_path:
@@ -542,6 +542,7 @@ if __name__ == "__main__":
     parser.add_argument('--match-k', type=int, default=4, help='Minimum overlapping words for k-of-n search')
     parser.add_argument('--match-n', type=int, default=7, help='Window size (n) for k-of-n search')
     parser.add_argument('--context-words', type=int, default=40, help='Maximum LH words to use around the reference for matching')
+    parser.add_argument('--min-word-length', type=int, default=1, help='Minimum word length to count in k-of-n matching (filters out short words)')
     parser.add_argument('--no-symmetric-context', action='store_true', help='Disable symmetric context (use only words after the ref)')
     parser.add_argument('--output-json', type=str, help='Optional JSON dump of the link results')
     parser.add_argument('--update-output-json', action='store_true', help='Only overwrite rows with Status="Pending" when writing output JSON')
@@ -557,5 +558,6 @@ if __name__ == "__main__":
         symmetric_context=not args.no_symmetric_context,
         output_json=args.output_json,
         llm_payloads_path=args.llm_payloads_json,
-        update_output_json=args.update_output_json
+        update_output_json=args.update_output_json,
+        min_word_length=args.min_word_length
     )
