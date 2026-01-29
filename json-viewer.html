@@ -706,7 +706,7 @@
             
             // First, highlight "בסימן" and the 4 words following it with green bold
             // Match "בסימן" followed by up to 4 Hebrew words (including nikud and punctuation)
-            const simanPattern = /(בסימן(?:\s+[\u05D0-\u05EA\u0591-\u05C7"׳״'()]+){0,4})/g;
+            const simanPattern = /(סימן(?:\s+[\u05D0-\u05EA\u0591-\u05C7"׳״'()]+){0,4})/g;
             highlightedSnippet = highlightedSnippet.replace(simanPattern, '<span style="background-color: #c8e6c9; font-weight: bold;">$1</span>');
             
             // Then highlight each matched word with yellow
@@ -1047,21 +1047,70 @@
                         const cleanLink = url.origin + url.pathname;
                         data[currentIndex].RefBExactLink = cleanLink;
                         
-                        // Empty the LMSnippet field
-                        data[currentIndex].LMSnippet = '';
+                        // Fetch the LM snippet from the server
+                        fetch(`/lm-paragraph/${encodeURIComponent(ref)}`)
+                            .then(response => response.json())
+                            .then(result => {
+                                if (result.text) {
+                                    // Update LMSnippet with the fetched text
+                                    data[currentIndex].LMSnippet = result.text;
+                                    
+                                    // Update the UI
+                                    const refbDisplay = document.querySelector('.refb-display');
+                                    const refbEdit = document.querySelector('.refb-edit');
+                                    const refbEditBtn = document.querySelector('.refb-edit-btn');
+                                    
+                                    // Make sure display mode is shown, not edit mode
+                                    if (refbDisplay && refbEdit) {
+                                        // Highlight matched words in the snippet
+                                        let matchedWords = (data[currentIndex].MatchedWords || '').split(' ').filter(w => w.trim());
+                                        let highlightedText = result.text;
+                                        matchedWords.forEach(word => {
+                                            if (word) {
+                                                const regex = new RegExp('(' + word + ')', 'g');
+                                                highlightedText = highlightedText.replace(regex, '<span class="highlight-siman">$1</span>');
+                                            }
+                                        });
+                                        
+                                        // Update both display and edit areas
+                                        refbDisplay.innerHTML = highlightedText;
+                                        refbEdit.value = result.text;
+                                        
+                                        // Ensure display mode is visible
+                                        refbDisplay.style.display = 'block';
+                                        refbEdit.style.display = 'none';
+                                        if (refbEditBtn) refbEditBtn.textContent = 'ערוך';
+                                    }
+                                    
+                                    console.log('✓ Fetched and updated LMSnippet');
+                                } else {
+                                    console.warn('No text found for reference:', ref);
+                                    data[currentIndex].LMSnippet = '';
+                                }
+                            })
+                            .catch(error => {
+                                console.error('Error fetching LM paragraph:', error);
+                                // Clear the snippet on error
+                                data[currentIndex].LMSnippet = '';
+                                const refbDisplay = document.querySelector('.refb-display');
+                                const refbEdit = document.querySelector('.refb-edit');
+                                if (refbDisplay) {
+                                    refbDisplay.textContent = 'Error fetching paragraph: ' + error.message;
+                                    refbDisplay.style.display = 'block';
+                                }
+                                if (refbEdit) {
+                                    refbEdit.value = '';
+                                    refbEdit.style.display = 'none';
+                                }
+                            });
                         
                         // Change status to verified
                         data[currentIndex].Status = 'verified';
                         
                         hasChanges = true;
                         
-                        // Update the UI
-                        const refbDisplay = document.querySelector('.refb-display');
-                        const refbEdit = document.querySelector('.refb-edit');
+                        // Update the status dropdown
                         const statusSelect = document.querySelector('select[data-field="Status"]');
-                        
-                        if (refbDisplay) refbDisplay.textContent = '';
-                        if (refbEdit) refbEdit.value = '';
                         if (statusSelect) statusSelect.value = 'verified';
                         
                         // Update the main link button at the top

@@ -237,6 +237,55 @@ async def health_check():
     }
 
 
+@app.get("/lm-paragraph/{ref_path:path}")
+async def get_lm_paragraph(ref_path: str):
+    """Get Likutei Moharan paragraph text from reference path"""
+    try:
+        # Load LM JSON
+        lm_file = DATA_FOLDER / "Likutei_Moharan_refs.json"
+        if not lm_file.exists():
+            raise HTTPException(status_code=404, detail="Likutei Moharan JSON not found")
+        
+        with open(lm_file, 'r', encoding='utf-8') as f:
+            lm_data = json.load(f)
+        
+        # Parse the reference path (e.g., "Likutei Moharan.61.1.3" or "Likutei Moharan%2C_Part_II.23.1.5")
+        # Decode URL encoding
+        ref_path = ref_path.replace('%2C_', ', ')
+        parts = ref_path.split('.')
+        
+        # Navigate through the JSON structure
+        current = lm_data
+        for part in parts:
+            if isinstance(current, dict):
+                current = current.get(part)
+            elif isinstance(current, list):
+                try:
+                    idx = int(part) - 1  # Convert to 0-based index
+                    if 0 <= idx < len(current):
+                        current = current[idx]
+                    else:
+                        current = None
+                except (ValueError, IndexError):
+                    current = None
+            else:
+                current = None
+            
+            if current is None:
+                raise HTTPException(status_code=404, detail=f"Reference not found: {ref_path}")
+        
+        # Return the text
+        if isinstance(current, str):
+            return {"text": current, "ref": ref_path}
+        else:
+            raise HTTPException(status_code=400, detail="Reference does not point to a text paragraph")
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching paragraph: {str(e)}")
+
+
 if __name__ == "__main__":
     import uvicorn
     # Ensure data folder exists
