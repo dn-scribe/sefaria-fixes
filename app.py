@@ -10,12 +10,20 @@ from fastapi.middleware.cors import CORSMiddleware
 from pathlib import Path
 import json
 import os
+import logging
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 import asyncio
 from filelock import FileLock
 import hashlib
 from collections import defaultdict, Counter
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="JSON Link Viewer & Editor")
 
@@ -67,13 +75,13 @@ class DataManager:
             if DATA_FILE.exists():
                 file_mtime = datetime.fromtimestamp(DATA_FILE.stat().st_mtime)
                 self.last_save_time = file_mtime
-                print(f"📅 Last file save was at: {file_mtime.isoformat()}")
+                logger.info(f"📅 Last file save was at: {file_mtime.isoformat()}")
             else:
                 self.last_save_time = datetime.now()
             
             self.modification_count = 0
             self.last_save_error = None
-            print(f"✅ DataManager initialized with {len(self.in_memory_data)} records")
+            logger.info(f"✅ DataManager initialized with {len(self.in_memory_data)} records")
     
     def _compute_hash(self, data: List[Dict]) -> str:
         """Compute hash of data for version tracking"""
@@ -92,28 +100,50 @@ class DataManager:
     async def _save_to_disk(self) -> bool:
         """Save data to JSON file with file locking. Returns success status."""
         try:
+            logger.info("="*60)
+            logger.info(f"💾 ATTEMPTING SAVE TO DISK: {len(self.in_memory_data)} records")
+            logger.info(f"   File: {DATA_FILE.absolute()}")
+            logger.info(f"   File exists: {DATA_FILE.exists()}")
+            logger.info(f"   Parent directory: {DATA_FILE.parent.absolute()}")
+            logger.info(f"   Parent writable: {os.access(DATA_FILE.parent, os.W_OK)}")
+            logger.info(f"   Modifications being saved: {self.modification_count}")
+            
             file_lock = FileLock(str(LOCK_FILE))
+            logger.info(f"   Lock file: {LOCK_FILE.absolute()}")
+            
             with file_lock:
+                logger.info(f"   🔒 Lock acquired")
+                
                 # Write new data
-                print(f"\n{'='*60}")
-                print(f"💾 SAVING TO DISK: {len(self.in_memory_data)} records")
-                print(f"   File: {DATA_FILE.absolute()}")
-                print(f"   Modifications being saved: {self.modification_count}")
+                logger.info(f"   ✍️  Writing JSON data...")
                 with open(DATA_FILE, 'w', encoding='utf-8') as f:
                     json.dump(self.in_memory_data, f, ensure_ascii=False, indent=2)
+                    f.flush()
+                    os.fsync(f.fileno())
+                
+                logger.info(f"   ✍️  File written, checking...")
+                
+                if not DATA_FILE.exists():
+                    raise Exception(f"File does not exist after write: {DATA_FILE}")
                 
                 file_size = DATA_FILE.stat().st_size
-                print(f"✅ DISK WRITE COMPLETE!")
-                print(f"   File size: {file_size:,} bytes")
-                print(f"   Saved at: {datetime.now().isoformat()}")
-                print(f"{'='*60}\n")
+                file_mtime = datetime.fromtimestamp(DATA_FILE.stat().st_mtime)
+                
+                logger.info(f"✅ DISK WRITE COMPLETE!")
+                logger.info(f"   File size: {file_size:,} bytes")
+                logger.info(f"   File mtime: {file_mtime.isoformat()}")
+                logger.info(f"   Saved at: {datetime.now().isoformat()}")
+                logger.info("="*60)
+                
                 self.last_save_time = datetime.now()
                 self.modification_count = 0
                 self.last_save_error = None
                 return True
         except Exception as e:
             error_msg = f"Save failed: {str(e)}"
-            print(f"❌ {error_msg}")
+            logger.error(f"❌ {error_msg}")
+            import traceback
+            traceback.print_exc()
             self.last_save_error = error_msg
             return False
     
@@ -160,7 +190,7 @@ class DataManager:
             
             # Update tracking
             self.modification_count += 1
-            print(f"📝 Record updated at index {index}. Modification count: {self.modification_count}")
+            logger.info(f"📝 Record updated at index {index}. Modification count: {self.modification_count}")
             self.data_version = self._compute_hash(self.in_memory_data)
             
             if username:
@@ -200,7 +230,7 @@ class DataManager:
         async with self.lock:
             # Save when modification count reaches threshold
             if self.modification_count >= SAVE_THRESHOLD_MODIFICATIONS:
-                print(f"🔄 Save triggered: {self.modification_count} modifications >= {SAVE_THRESHOLD_MODIFICATIONS}")
+                logger.info(f"🔄 Save triggered: {self.modification_count} modifications >= {SAVE_THRESHOLD_MODIFICATIONS}")
                 return await self._save_to_disk()
             
             return False
@@ -251,14 +281,14 @@ async def startup_event():
     global data_manager
     data_manager = DataManager()
     await data_manager.initialize()
-    print(f"🚀 Auto-save enabled (saves every {SAVE_THRESHOLD_MODIFICATIONS} modifications)")
+    logger.info(f"🚀 Auto-save enabled (saves every {SAVE_THRESHOLD_MODIFICATIONS} modifications)")
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """Save data on shutdown"""
     if data_manager and data_manager.modification_count > 0:
-        print("💾 Saving unsaved changes on shutdown...")
+        logger.info("💾 Saving unsaved changes on shutdown...")
         await data_manager.force_save()
 
 
@@ -539,9 +569,9 @@ if __name__ == "__main__":
     import uvicorn
     # Ensure data folder exists
     DATA_FOLDER.mkdir(parents=True, exist_ok=True)
-    print(f"Starting server on port {PORT}")
-    print(f"Admin user: {ADMIN_USER}")
-    print(f"Data folder: {DATA_FOLDER.absolute()}")
-    print(f"Data folder writable: {os.access(DATA_FOLDER, os.W_OK)}")
-    print(f"Data file path: {DATA_FILE.absolute()}")
+    logger.info(f"Starting server on port {PORT}")
+    logger.info(f"Admin user: {ADMIN_USER}")
+    logger.info(f"Data folder: {DATA_FOLDER.absolute()}")
+    logger.info(f"Data folder writable: {os.access(DATA_FOLDER, os.W_OK)}")
+    logger.info(f"Data file path: {DATA_FILE.absolute()}")
     uvicorn.run(app, host="0.0.0.0", port=PORT)
