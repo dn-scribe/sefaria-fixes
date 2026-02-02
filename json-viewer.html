@@ -405,6 +405,9 @@
                     <button class="btn btn-upload" id="downloadBtn" onclick="downloadFromServer()" disabled style="margin-right: 10px;">
                         📥 Download JSON
                     </button>
+                    <button class="btn btn-upload" id="forceSaveBtn" onclick="forceSaveToServer()" disabled style="margin-right: 10px; background: #FF9800; color: white;">
+                        💾 Force Save
+                    </button>
                     <input type="file" id="fileInput" accept=".json" onchange="handleFileUpload(event)" style="display: none;">
                     <label for="fileInput" class="btn btn-upload" style="margin-right: 10px;">📁 בחר קובץ JSON</label>
                 </div>
@@ -527,17 +530,21 @@
                 // Enable/disable upload and download buttons
                 const uploadBtn = document.getElementById('uploadBtn');
                 const downloadBtn = document.getElementById('downloadBtn');
+                const forceSaveBtn = document.getElementById('forceSaveBtn');
                 
-                if (uploadBtn && downloadBtn) {
+                if (uploadBtn && downloadBtn && forceSaveBtn) {
                     uploadBtn.disabled = !isAdmin;
                     downloadBtn.disabled = !isAdmin;
+                    forceSaveBtn.disabled = !isAdmin;
                     
                     if (!isAdmin) {
                         uploadBtn.title = `Only ${adminUser} can upload files`;
                         downloadBtn.title = `Only ${adminUser} can download files`;
+                        forceSaveBtn.title = `Only ${adminUser} can force save`;
                     } else {
                         uploadBtn.title = 'Upload new JSON file to server';
                         downloadBtn.title = 'Download current JSON file from server';
+                        forceSaveBtn.title = 'Force immediate save to disk (ignores auto-save schedule)';
                     }
                 }
             } catch (error) {
@@ -633,6 +640,42 @@
             } catch (error) {
                 console.error('Download error:', error);
                 alert('Failed to download file. Check console for details.');
+            }
+        }
+        
+        // Force save to server (admin only)
+        async function forceSaveToServer() {
+            if (!isAdmin) {
+                alert('Only admin users can force save');
+                return;
+            }
+            
+            if (!confirm('Force save all unsaved changes to disk now?')) {
+                return;
+            }
+            
+            try {
+                showSaveIndicator('💾 Saving to disk...', 'warning', 3000);
+                
+                const response = await fetch('/force-save', {
+                    method: 'POST',
+                    headers: {
+                        'X-Username': username
+                    }
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok) {
+                    showSaveIndicator(`✅ ${result.message}`, 'success', 3000);
+                    // Update stats to show changes were saved
+                    await updateStats();
+                } else {
+                    showSaveIndicator(`❌ ${result.detail || 'Save failed'}`, 'error', 5000);
+                }
+            } catch (error) {
+                console.error('Force save error:', error);
+                showSaveIndicator('❌ Failed to force save. Check console for details.', 'error', 5000);
             }
         }
         
