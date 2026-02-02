@@ -18,12 +18,19 @@ from filelock import FileLock
 import hashlib
 from collections import defaultdict, Counter
 
-# Configure logging
+# Configure logging with immediate flushing for Cloud Run
+import sys
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    stream=sys.stderr,
+    force=True
 )
 logger = logging.getLogger(__name__)
+
+# Force unbuffered output for Cloud Run
+sys.stdout.reconfigure(line_buffering=True)
+sys.stderr.reconfigure(line_buffering=True)
 
 app = FastAPI(title="JSON Link Viewer & Editor")
 
@@ -354,29 +361,46 @@ async def update_record(
     index = body.get("index")
     updates = body.get("updates", {})
     
+    logger.info(f"📨 /update endpoint called: index={index}, updates={updates}, username={username}")
+    
     if index is None:
         raise HTTPException(status_code=400, detail="Missing 'index' field")
     
     try:
+        logger.info(f"🔄 Calling data_manager.update_record for index {index}")
         result = await data_manager.update_record(index, updates, username)
+        logger.info(f"✅ update_record returned: {result}")
         return result
     except ValueError as e:
+        logger.error(f"❌ ValueError in update_record: {e}")
         raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"❌ Unexpected error in update_record: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
 
 
 @app.post("/force-save")
 async def force_save(username: Optional[str] = Header(None, alias="X-Username")):
     """Force immediate save (admin only)"""
+    logger.info(f"🔨 /force-save endpoint called by username={username}")
+    logger.info(f"   Admin user configured as: {ADMIN_USER}")
+    
     if username != ADMIN_USER:
+        logger.warning(f"❌ Force save denied: '{username}' is not admin '{ADMIN_USER}'")
         raise HTTPException(
             status_code=403,
             detail=f"Only user '{ADMIN_USER}' can force save"
         )
     
     if not data_manager:
+        logger.error("❌ Data manager not initialized!")
         raise HTTPException(status_code=500, detail="Data manager not initialized")
     
+    logger.info("🔄 Calling data_manager.force_save()")
     result = await data_manager.force_save()
+    logger.info(f"✅ Force save completed: {result}")
     return result
 
 
