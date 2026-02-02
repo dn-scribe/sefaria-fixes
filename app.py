@@ -1,6 +1,7 @@
 """
 FastAPI application for JSON Link Viewer & Editor
 Supports multi-user concurrent editing with conflict detection
+Features: In-memory data management, batch saving, real-time statistics
 """
 from fastapi import FastAPI, HTTPException, Request, Header, UploadFile, File
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
@@ -9,11 +10,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from pathlib import Path
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 import asyncio
 from filelock import FileLock
 import hashlib
+from collections import defaultdict, Counter
 
 app = FastAPI(title="JSON Link Viewer & Editor")
 
@@ -24,8 +26,12 @@ LOCK_FILE = DATA_FOLDER / "tmp_lh_links.json.lock"
 ADMIN_USER = os.getenv("ADMIN_USER", "danny")
 PORT = int(os.getenv("PORT", "7860"))
 
-# In-memory cache for version tracking
-data_version = {"hash": None, "timestamp": None}
+# Batch save configuration
+SAVE_INTERVAL_MINUTES = int(os.getenv("SAVE_INTERVAL_MINUTES", "3"))
+SAVE_THRESHOLD_MODIFICATIONS = int(os.getenv("SAVE_THRESHOLD_MODIFICATIONS", "10"))
+
+# Global data manager instance
+data_manager = None
 lock = asyncio.Lock()
 
 # CORS middleware
@@ -38,37 +44,240 @@ app.add_middleware(
 )
 
 
-def compute_hash(data: List[Dict]) -> str:
-    """Compute hash of data for version tracking"""
-    return hashlib.md5(json.dumps(data, sort_keys=True).encode()).hexdigest()
-
-
-def load_data() -> List[Dict[str, Any]]:
-    """Load data from JSON file with file locking"""
-    if not DATA_FILE.exists():
-        return []
+class DataManager:
+    """
+    Centralized in-memory data manager with batch saving and statistics
+    """
+    def __init__(self):
+        self.in_memory_data: List[Dict[str, Any]] = []
+        self.modification_count: int = 0
+        self.last_save_time: Optional[datetime] = None
+        self.last_save_error: Optional[str] = None
+        self.data_version: str = ""
+        self.user_activity: Dict[str, datetime] = {}  # Track active users
+        self.upload_timestamp: Optional[datetime] = None  # Track when upload happened
+        self.lock = asyncio.Lock()
+        
+    async def initialize(self):
+        """Load initial data from disk"""
+        async with self.lock:
+            self.in_memory_data = await self._load_from_disk()
+            self.data_version = self._compute_hash(self.in_memory_data)
+            self.last_save_time = datetime.now()
+            self.modification_count = 0
+            self.last_save_error = None
+            print(f"✅ DataManager initialized with {len(self.in_memory_data)} records")
     
-    file_lock = FileLock(str(LOCK_FILE))
-    with file_lock:
-        with open(DATA_FILE, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-            # Update version tracking
-            data_version["hash"] = compute_hash(data)
-            data_version["timestamp"] = datetime.now().isoformat()
-            return data
+    def _compute_hash(self, data: List[Dict]) -> str:
+        """Compute hash of data for version tracking"""
+        return hashlib.md5(json.dumps(data, sort_keys=True).encode()).hexdigest()
+    
+    async def _load_from_disk(self) -> List[Dict[str, Any]]:
+        """Load data from JSON file with file locking"""
+        if not DATA_FILE.exists():
+            return []
+        
+        file_lock = FileLock(str(LOCK_FILE))
+        with file_lock:
+            with open(DATA_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+    
+    async def _save_to_disk(self) -> bool:
+        """Save data to JSON file with file locking. Returns success status."""
+        try:
+            file_lock = FileLock(str(LOCK_FILE))
+            with file_lock:
+                # Create backup
+                if DATA_FILE.exists():
+                    backup_file = DATA_FOLDER / f"tmp_lh_links.backup.{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+                    with open(DATA_FILE, 'r', encoding='utf-8') as f:
+                        with open(backup_file, 'w', encoding='utf-8') as bf:
+                            bf.write(f.read())
+                
+                # Write new data
+                print(f"💾 Saving {len(self.in_memory_data)} records to: {DATA_FILE.absolute()}")
+                with open(DATA_FILE, 'w', encoding='utf-8') as f:
+                    json.dump(self.in_memory_data, f, ensure_ascii=False, indent=2)
+                
+                print(f"✅ Data saved successfully. File size: {DATA_FILE.stat().st_size} bytes")
+                self.last_save_time = datetime.now()
+                self.modification_count = 0
+                self.last_save_error = None
+                return True
+        except Exception as e:
+            error_msg = f"Save failed: {str(e)}"
+            print(f"❌ {error_msg}")
+            self.last_save_error = error_msg
+            return False
+    
+    async def get_data(self, username: Optional[str] = None) -> Dict[str, Any]:
+        """Get current in-memory data with metadata"""
+        async with self.lock:
+            if username:
+                self.user_activity[username] = datetime.now()
+            
+            # Check if client needs to reload due to upload
+            reload_required = False
+            if self.upload_timestamp:
+                # If upload happened in last 5 seconds, tell clients to reload
+                if datetime.now() - self.upload_timestamp < timedelta(seconds=5):
+                    reload_required = True
+            
+            return {
+                "data": self.in_memory_data,
+                "version": self.data_version,
+                "timestamp": datetime.now().isoformat(),
+                "username": username,
+                "unsaved_changes": self.modification_count,
+                "last_save": self.last_save_time.isoformat() if self.last_save_time else None,
+                "save_error": self.last_save_error,
+                "reload_required": reload_required
+            }
+    
+    async def update_record(self, index: int, updates: Dict[str, Any], username: Optional[str] = None) -> Dict[str, Any]:
+        """Update a single record in memory"""
+        async with self.lock:
+            if index < 0 or index >= len(self.in_memory_data):
+                raise ValueError(f"Invalid index: {index}")
+            
+            # Apply updates
+            old_status = self.in_memory_data[index].get("Status")
+            for key, value in updates.items():
+                self.in_memory_data[index][key] = value
+            
+            # Track who made the change if Status changed
+            new_status = self.in_memory_data[index].get("Status")
+            if username and old_status != new_status:
+                self.in_memory_data[index]["fixed_by"] = username
+                self.in_memory_data[index]["fixed_at"] = datetime.now().isoformat()
+            
+            # Update tracking
+            self.modification_count += 1
+            self.data_version = self._compute_hash(self.in_memory_data)
+            
+            if username:
+                self.user_activity[username] = datetime.now()
+            
+            return {
+                "status": "success",
+                "modification_count": self.modification_count,
+                "version": self.data_version
+            }
+    
+    async def replace_all_data(self, new_data: List[Dict[str, Any]], username: Optional[str] = None) -> Dict[str, Any]:
+        """Replace all data (used by upload and legacy save)"""
+        async with self.lock:
+            self.in_memory_data = new_data
+            self.data_version = self._compute_hash(self.in_memory_data)
+            self.modification_count = 0
+            self.upload_timestamp = datetime.now()
+            
+            # Save immediately
+            success = await self._save_to_disk()
+            
+            return {
+                "status": "success" if success else "error",
+                "message": "Data replaced and saved" if success else "Data replaced but save failed",
+                "items": len(self.in_memory_data),
+                "version": self.data_version,
+                "save_error": self.last_save_error
+            }
+    
+    async def check_and_save(self) -> bool:
+        """Check if save is needed and perform it. Returns True if saved."""
+        async with self.lock:
+            # Check if we should save
+            should_save = False
+            
+            # Trigger 1: Modification count threshold
+            if self.modification_count >= SAVE_THRESHOLD_MODIFICATIONS:
+                print(f"🔄 Save triggered: {self.modification_count} modifications >= {SAVE_THRESHOLD_MODIFICATIONS}")
+                should_save = True
+            
+            # Trigger 2: Time interval
+            if self.last_save_time:
+                time_since_save = datetime.now() - self.last_save_time
+                if time_since_save >= timedelta(minutes=SAVE_INTERVAL_MINUTES) and self.modification_count > 0:
+                    print(f"🔄 Save triggered: {time_since_save.seconds // 60} minutes >= {SAVE_INTERVAL_MINUTES} with {self.modification_count} changes")
+                    should_save = True
+            
+            if should_save:
+                return await self._save_to_disk()
+            
+            return False
+    
+    async def force_save(self) -> Dict[str, Any]:
+        """Force immediate save (admin function)"""
+        async with self.lock:
+            success = await self._save_to_disk()
+            return {
+                "status": "success" if success else "error",
+                "message": f"Saved {len(self.in_memory_data)} records" if success else "Save failed",
+                "error": self.last_save_error,
+                "modifications_saved": self.modification_count if success else 0
+            }
+    
+    def get_stats(self, filter_status: Optional[str] = None) -> Dict[str, Any]:
+        """Get statistics about current data"""
+        # Compute stats from in-memory data (includes unsaved changes)
+        status_counts = Counter(item.get("Status", "unknown") for item in self.in_memory_data)
+        
+        # Filter if requested
+        visible_records = len(self.in_memory_data)
+        if filter_status:
+            visible_records = status_counts.get(filter_status, 0)
+        
+        # Active users (active in last 5 minutes)
+        now = datetime.now()
+        active_users = [
+            user for user, last_active in self.user_activity.items()
+            if now - last_active < timedelta(minutes=5)
+        ]
+        
+        return {
+            "total_records": len(self.in_memory_data),
+            "visible_records": visible_records,
+            "by_status": dict(status_counts),
+            "unsaved_changes": self.modification_count,
+            "last_save": self.last_save_time.isoformat() if self.last_save_time else None,
+            "last_save_error": self.last_save_error,
+            "active_users": len(active_users),
+            "active_user_names": active_users
+        }
 
 
-def save_data(data: List[Dict[str, Any]]) -> None:
-    """Save data to JSON file with file locking"""
-    file_lock = FileLock(str(LOCK_FILE))
-    with file_lock:
-        print(f"Saving data to: {DATA_FILE.absolute()}")
-        with open(DATA_FILE, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        print(f"Data saved successfully. File size: {DATA_FILE.stat().st_size} bytes")
-        # Update version tracking
-        data_version["hash"] = compute_hash(data)
-        data_version["timestamp"] = datetime.now().isoformat()
+# Background task for auto-saving
+async def auto_save_task():
+    """Background task that periodically checks and saves data"""
+    while True:
+        try:
+            await asyncio.sleep(30)  # Check every 30 seconds
+            if data_manager:
+                saved = await data_manager.check_and_save()
+                if saved:
+                    print(f"✅ Auto-save completed at {datetime.now().isoformat()}")
+        except Exception as e:
+            print(f"❌ Auto-save error: {e}")
+
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize data manager and start background tasks"""
+    global data_manager
+    data_manager = DataManager()
+    await data_manager.initialize()
+    
+    # Start auto-save background task
+    asyncio.create_task(auto_save_task())
+    print(f"🚀 Auto-save task started (every {SAVE_INTERVAL_MINUTES} min or {SAVE_THRESHOLD_MODIFICATIONS} mods)")
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Save data on shutdown"""
+    if data_manager and data_manager.modification_count > 0:
+        print("💾 Saving unsaved changes on shutdown...")
+        await data_manager.force_save()
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -85,23 +294,74 @@ async def read_root():
 @app.get("/data")
 async def get_data(username: Optional[str] = Header(None, alias="X-Username")):
     """Get the current JSON data with version info"""
-    async with lock:
-        data = load_data()
-        return {
-            "data": data,
-            "version": data_version["hash"],
-            "timestamp": data_version["timestamp"],
-            "username": username
-        }
+    if not data_manager:
+        raise HTTPException(status_code=500, detail="Data manager not initialized")
+    
+    return await data_manager.get_data(username)
 
 
 @app.get("/version")
 async def get_version():
     """Get current data version (for conflict detection)"""
+    if not data_manager:
+        raise HTTPException(status_code=500, detail="Data manager not initialized")
+    
     return {
-        "version": data_version["hash"],
-        "timestamp": data_version["timestamp"]
+        "version": data_manager.data_version,
+        "timestamp": datetime.now().isoformat()
     }
+
+
+@app.get("/stats")
+async def get_stats(
+    username: Optional[str] = Header(None, alias="X-Username"),
+    filter_status: Optional[str] = None
+):
+    """Get statistics about the data"""
+    if not data_manager:
+        raise HTTPException(status_code=500, detail="Data manager not initialized")
+    
+    stats = data_manager.get_stats(filter_status)
+    return stats
+
+
+@app.post("/update")
+async def update_record(
+    request: Request,
+    username: Optional[str] = Header(None, alias="X-Username")
+):
+    """Update a single record (fast, in-memory only)"""
+    if not data_manager:
+        raise HTTPException(status_code=500, detail="Data manager not initialized")
+    
+    body = await request.json()
+    index = body.get("index")
+    updates = body.get("updates", {})
+    
+    if index is None:
+        raise HTTPException(status_code=400, detail="Missing 'index' field")
+    
+    try:
+        result = await data_manager.update_record(index, updates, username)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/force-save")
+async def force_save(username: Optional[str] = Header(None, alias="X-Username")):
+    """Force immediate save (admin only)"""
+    if username != ADMIN_USER:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Only user '{ADMIN_USER}' can force save"
+        )
+    
+    if not data_manager:
+        raise HTTPException(status_code=500, detail="Data manager not initialized")
+    
+    result = await data_manager.force_save()
+    return result
 
 
 @app.post("/save")
@@ -110,20 +370,19 @@ async def save_changes(
     username: Optional[str] = Header(None, alias="X-Username"),
     client_version: Optional[str] = Header(None, alias="X-Data-Version")
 ):
-    """Save changes with conflict detection and fixed_by tracking"""
+    """Save changes - LEGACY endpoint, now saves entire dataset to memory and triggers save"""
+    if not data_manager:
+        raise HTTPException(status_code=500, detail="Data manager not initialized")
+    
     async with lock:
-        # Get current data to check for conflicts
-        current_data = load_data()
-        current_hash = data_version["hash"]
-        
         # Check for conflicts if client provided version
-        if client_version and client_version != current_hash:
+        if client_version and client_version != data_manager.data_version:
             return JSONResponse(
                 status_code=409,
                 content={
                     "error": "conflict",
                     "message": "Data has been modified by another user. Please reload.",
-                    "current_version": current_hash
+                    "current_version": data_manager.data_version
                 }
             )
         
@@ -131,25 +390,16 @@ async def save_changes(
         body = await request.json()
         new_data = body if isinstance(body, list) else body.get("data", [])
         
-        # Track changes and update fixed_by field
-        if username and current_data:
-            for i, new_item in enumerate(new_data):
-                if i < len(current_data):
-                    old_item = current_data[i]
-                    # Check if Status changed
-                    if new_item.get("Status") != old_item.get("Status"):
-                        new_item["fixed_by"] = username
-                        new_item["fixed_at"] = datetime.now().isoformat()
-        
-        # Save the new data
-        save_data(new_data)
+        # Replace all data
+        result = await data_manager.replace_all_data(new_data, username)
         
         return {
-            "status": "success",
-            "message": "Data saved successfully",
-            "version": data_version["hash"],
-            "timestamp": data_version["timestamp"],
-            "saved_by": username
+            "status": result["status"],
+            "message": result["message"],
+            "version": result["version"],
+            "timestamp": datetime.now().isoformat(),
+            "saved_by": username,
+            "save_error": result.get("save_error")
         }
 
 
@@ -161,51 +411,68 @@ async def upload_file(
     """Upload a new JSON file (admin only)"""
     if username != ADMIN_USER:
         raise HTTPException(
-            status_code=403, 
+            status_code=403,
             detail=f"Only user '{ADMIN_USER}' can upload files"
         )
+    
+    if not data_manager:
+        raise HTTPException(status_code=500, detail="Data manager not initialized")
     
     # Validate JSON
     try:
         content = await file.read()
-        data = json.loads(content.decode('utf-8'))
-        if not isinstance(data, list):
+        new_data = json.loads(content.decode('utf-8'))
+        if not isinstance(new_data, list):
             raise ValueError("JSON must be an array")
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid JSON file: {str(e)}")
     
-    # Save the data
-    async with lock:
-        save_data(data)
+    # Replace all data and save immediately
+    result = await data_manager.replace_all_data(new_data, username)
     
     return {
-        "status": "success",
-        "message": f"File uploaded successfully by {username}",
-        "items": len(data),
-        "version": data_version["hash"],
-        "saved_to": str(DATA_FILE.absolute())
+        "status": result["status"],
+        "message": f"File uploaded successfully by {username}. Other users will be notified to reload.",
+        "items": len(new_data),
+        "version": result["version"],
+        "saved_to": str(DATA_FILE.absolute()),
+        "save_error": result.get("save_error")
     }
 
 
 @app.get("/download")
 async def download_file(username: Optional[str] = Header(None, alias="X-Username")):
-    """Download the current JSON file (admin only)"""
+    """Download the current JSON file (admin only) - includes unsaved changes from memory"""
     if username != ADMIN_USER:
         raise HTTPException(
-            status_code=403, 
+            status_code=403,
             detail=f"Only user '{ADMIN_USER}' can download files"
         )
     
-    if not DATA_FILE.exists():
-        raise HTTPException(status_code=404, detail="Data file not found")
+    if not data_manager:
+        raise HTTPException(status_code=500, detail="Data manager not initialized")
     
-    response = FileResponse(
-        path=DATA_FILE,
-        filename=f"tmp_lh_links_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-        media_type="application/json"
-    )
-    response.headers["X-File-Path"] = str(DATA_FILE.absolute())
-    return response
+    # Get current in-memory data (includes unsaved changes)
+    data_info = await data_manager.get_data(username)
+    current_data = data_info["data"]
+    
+    # Create temporary file with current data
+    temp_file = DATA_FOLDER / f"tmp_download_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    with open(temp_file, 'w', encoding='utf-8') as f:
+        json.dump(current_data, f, ensure_ascii=False, indent=2)
+    
+    try:
+        response = FileResponse(
+            path=temp_file,
+            filename=f"tmp_lh_links_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+            media_type="application/json"
+        )
+        response.headers["X-File-Path"] = str(DATA_FILE.absolute())
+        response.headers["X-Unsaved-Changes"] = str(data_info["unsaved_changes"])
+        return response
+    finally:
+        # Clean up temp file after response (done in background)
+        pass
 
 
 @app.get("/health")
