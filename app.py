@@ -27,8 +27,7 @@ ADMIN_USER = os.getenv("ADMIN_USER", "danny")
 PORT = int(os.getenv("PORT", "7860"))
 
 # Batch save configuration
-SAVE_INTERVAL_MINUTES = int(os.getenv("SAVE_INTERVAL_MINUTES", "3"))
-SAVE_THRESHOLD_MODIFICATIONS = int(os.getenv("SAVE_THRESHOLD_MODIFICATIONS", "10"))
+SAVE_THRESHOLD_MODIFICATIONS = int(os.getenv("SAVE_THRESHOLD_MODIFICATIONS", "3"))
 
 # Global data manager instance
 data_manager = None
@@ -63,7 +62,15 @@ class DataManager:
         async with self.lock:
             self.in_memory_data = await self._load_from_disk()
             self.data_version = self._compute_hash(self.in_memory_data)
-            self.last_save_time = datetime.now()
+            
+            # Set last_save_time to the file's actual modification time
+            if DATA_FILE.exists():
+                file_mtime = datetime.fromtimestamp(DATA_FILE.stat().st_mtime)
+                self.last_save_time = file_mtime
+                print(f"📅 Last file save was at: {file_mtime.isoformat()}")
+            else:
+                self.last_save_time = datetime.now()
+            
             self.modification_count = 0
             self.last_save_error = None
             print(f"✅ DataManager initialized with {len(self.in_memory_data)} records")
@@ -87,19 +94,19 @@ class DataManager:
         try:
             file_lock = FileLock(str(LOCK_FILE))
             with file_lock:
-                # Create backup
-                if DATA_FILE.exists():
-                    backup_file = DATA_FOLDER / f"tmp_lh_links.backup.{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-                    with open(DATA_FILE, 'r', encoding='utf-8') as f:
-                        with open(backup_file, 'w', encoding='utf-8') as bf:
-                            bf.write(f.read())
-                
                 # Write new data
-                print(f"💾 Saving {len(self.in_memory_data)} records to: {DATA_FILE.absolute()}")
+                print(f"\n{'='*60}")
+                print(f"💾 SAVING TO DISK: {len(self.in_memory_data)} records")
+                print(f"   File: {DATA_FILE.absolute()}")
+                print(f"   Modifications being saved: {self.modification_count}")
                 with open(DATA_FILE, 'w', encoding='utf-8') as f:
                     json.dump(self.in_memory_data, f, ensure_ascii=False, indent=2)
                 
-                print(f"✅ Data saved successfully. File size: {DATA_FILE.stat().st_size} bytes")
+                file_size = DATA_FILE.stat().st_size
+                print(f"✅ DISK WRITE COMPLETE!")
+                print(f"   File size: {file_size:,} bytes")
+                print(f"   Saved at: {datetime.now().isoformat()}")
+                print(f"{'='*60}\n")
                 self.last_save_time = datetime.now()
                 self.modification_count = 0
                 self.last_save_error = None
@@ -153,15 +160,20 @@ class DataManager:
             
             # Update tracking
             self.modification_count += 1
+            print(f"📝 Record updated at index {index}. Modification count: {self.modification_count}")
             self.data_version = self._compute_hash(self.in_memory_data)
             
             if username:
                 self.user_activity[username] = datetime.now()
             
+            # Check if auto-save should trigger (no background task needed)
+            save_triggered = await self.check_and_save()
+            
             return {
                 "status": "success",
                 "modification_count": self.modification_count,
-                "version": self.data_version
+                "version": self.data_version,
+                "auto_saved": save_triggered
             }
     
     async def replace_all_data(self, new_data: List[Dict[str, Any]], username: Optional[str] = None) -> Dict[str, Any]:
@@ -186,22 +198,9 @@ class DataManager:
     async def check_and_save(self) -> bool:
         """Check if save is needed and perform it. Returns True if saved."""
         async with self.lock:
-            # Check if we should save
-            should_save = False
-            
-            # Trigger 1: Modification count threshold
+            # Save when modification count reaches threshold
             if self.modification_count >= SAVE_THRESHOLD_MODIFICATIONS:
                 print(f"🔄 Save triggered: {self.modification_count} modifications >= {SAVE_THRESHOLD_MODIFICATIONS}")
-                should_save = True
-            
-            # Trigger 2: Time interval
-            if self.last_save_time:
-                time_since_save = datetime.now() - self.last_save_time
-                if time_since_save >= timedelta(minutes=SAVE_INTERVAL_MINUTES) and self.modification_count > 0:
-                    print(f"🔄 Save triggered: {time_since_save.seconds // 60} minutes >= {SAVE_INTERVAL_MINUTES} with {self.modification_count} changes")
-                    should_save = True
-            
-            if should_save:
                 return await self._save_to_disk()
             
             return False
@@ -246,30 +245,13 @@ class DataManager:
         }
 
 
-# Background task for auto-saving
-async def auto_save_task():
-    """Background task that periodically checks and saves data"""
-    while True:
-        try:
-            await asyncio.sleep(30)  # Check every 30 seconds
-            if data_manager:
-                saved = await data_manager.check_and_save()
-                if saved:
-                    print(f"✅ Auto-save completed at {datetime.now().isoformat()}")
-        except Exception as e:
-            print(f"❌ Auto-save error: {e}")
-
-
 @app.on_event("startup")
 async def startup_event():
-    """Initialize data manager and start background tasks"""
+    """Initialize data manager"""
     global data_manager
     data_manager = DataManager()
     await data_manager.initialize()
-    
-    # Start auto-save background task
-    asyncio.create_task(auto_save_task())
-    print(f"🚀 Auto-save task started (every {SAVE_INTERVAL_MINUTES} min or {SAVE_THRESHOLD_MODIFICATIONS} mods)")
+    print(f"🚀 Auto-save enabled (saves every {SAVE_THRESHOLD_MODIFICATIONS} modifications)")
 
 
 @app.on_event("shutdown")
