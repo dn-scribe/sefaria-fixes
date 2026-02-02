@@ -1061,11 +1061,17 @@
             // Set status to verified
             const statusSelect = document.querySelector('select[data-field="Status"]');
             if (statusSelect) {
+                const oldStatus = data[currentIndex].Status;
                 statusSelect.value = 'verified';
                 data[currentIndex].Status = 'verified';
+                
+                // Queue the update to server if status changed
+                if (oldStatus !== 'verified') {
+                    queueUpdate(currentIndex, { Status: 'verified' });
+                }
             }
             
-            // Save changes
+            // Also save any other changes in fields
             saveChanges();
             
             // Update local stats immediately (no server wait)
