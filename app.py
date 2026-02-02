@@ -98,7 +98,8 @@ class DataManager:
                 return json.load(f)
     
     async def _save_to_disk(self) -> bool:
-        """Save data to JSON file with file locking. Returns success status."""
+        """Save data to JSON file with file locking. Returns success status.
+        Note: Caller should already hold self.lock"""
         try:
             logger.info("="*60)
             logger.info(f"💾 ATTEMPTING SAVE TO DISK: {len(self.in_memory_data)} records")
@@ -196,8 +197,11 @@ class DataManager:
             if username:
                 self.user_activity[username] = datetime.now()
             
-            # Check if auto-save should trigger (no background task needed)
-            save_triggered = await self.check_and_save()
+            # Check if auto-save should trigger (already have lock, so check directly)
+            save_triggered = False
+            if self.modification_count >= SAVE_THRESHOLD_MODIFICATIONS:
+                logger.info(f"🔄 Save triggered: {self.modification_count} modifications >= {SAVE_THRESHOLD_MODIFICATIONS}")
+                save_triggered = await self._save_to_disk()
             
             return {
                 "status": "success",
