@@ -69,6 +69,7 @@ class DataManager:
         self.last_save_error: Optional[str] = None
         self.data_version: str = ""
         self.user_activity: Dict[str, datetime] = {}  # Track active users
+        self.user_current_record: Dict[str, int] = {}  # Track which record each user is viewing
         self.upload_timestamp: Optional[datetime] = None  # Track when upload happened
         self.lock = asyncio.Lock()
         
@@ -257,6 +258,81 @@ class DataManager:
                 "modifications_saved": self.modification_count if success else 0
             }
     
+    def _cleanup_stale_sessions(self):
+        """Remove inactive users (>10 minutes)"""
+        now = datetime.now()
+        stale_users = [
+            user for user, last_active in self.user_activity.items()
+            if now - last_active > timedelta(minutes=10)
+        ]
+        for user in stale_users:
+            logger.info(f"🧹 Cleaning up stale session for user: {user}")
+            del self.user_activity[user]
+            if user in self.user_current_record:
+                del self.user_current_record[user]
+    
+    async def get_next_record(
+        self,
+        username: str,
+        current_index: Optional[int] = None,
+        filter_status: Optional[str] = None,
+        filter_llm_status: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Find next available record that matches filters and is not in use by another user"""
+        async with self.lock:
+            # Update user activity
+            self.user_activity[username] = datetime.now()
+            
+            # Cleanup stale sessions
+            self._cleanup_stale_sessions()
+            
+            # Get set of indices currently being viewed by other users
+            occupied_indices = {
+                idx for user, idx in self.user_current_record.items()
+                if user != username
+            }
+            
+            # Start searching from current_index + 1, or 0 if not provided
+            start_index = (current_index + 1) if current_index is not None else 0
+            
+            # Search for next matching record
+            for offset in range(len(self.in_memory_data)):
+                idx = (start_index + offset) % len(self.in_memory_data)
+                
+                # Skip if occupied
+                if idx in occupied_indices:
+                    continue
+                
+                record = self.in_memory_data[idx]
+                
+                # Apply filters
+                if filter_status and record.get("Status") != filter_status:
+                    continue
+                
+                if filter_llm_status and record.get("LLMStatus") != filter_llm_status:
+                    continue
+                
+                # Found a match - mark as in use
+                self.user_current_record[username] = idx
+                
+                logger.info(f"📍 User {username} assigned to record {idx} (skipped {len(occupied_indices)} occupied)")
+                
+                return {
+                    "index": idx,
+                    "record": record,
+                    "occupied_count": len(occupied_indices),
+                    "active_users": list(self.user_activity.keys())
+                }
+            
+            # No matching record found
+            return {
+                "index": None,
+                "record": None,
+                "occupied_count": len(occupied_indices),
+                "active_users": list(self.user_activity.keys()),
+                "message": "No available records matching filters"
+            }
+    
     def get_stats(self, filter_status: Optional[str] = None) -> Dict[str, Any]:
         """Get statistics about current data"""
         # Compute stats from in-memory data (includes unsaved changes)
@@ -346,6 +422,32 @@ async def get_stats(
     
     stats = data_manager.get_stats(filter_status)
     return stats
+
+
+@app.get("/next")
+async def get_next_record(
+    username: Optional[str] = Header(None, alias="X-Username"),
+    current_index: Optional[int] = None,
+    filter_status: Optional[str] = None,
+    filter_llm_status: Optional[str] = None
+):
+    """Get the next available record that matches filters and is not being viewed by another user"""
+    if not username:
+        raise HTTPException(status_code=400, detail="Username header required")
+    
+    if not data_manager:
+        raise HTTPException(status_code=500, detail="Data manager not initialized")
+    
+    logger.info(f"🔍 /next called by {username}, current_index={current_index}, filters: status={filter_status}, llm={filter_llm_status}")
+    
+    result = await data_manager.get_next_record(
+        username=username,
+        current_index=current_index,
+        filter_status=filter_status,
+        filter_llm_status=filter_llm_status
+    )
+    
+    return result
 
 
 @app.post("/update")
