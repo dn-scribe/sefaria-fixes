@@ -107,7 +107,10 @@ class DataManager:
     
     async def _save_to_disk(self) -> bool:
         """Save data to JSON file with file locking and atomic writes. Returns success status.
-        Note: Caller should already hold self.lock"""
+        
+        IMPORTANT: This method assumes the caller already holds self.lock to ensure
+        thread-safety. All public methods that call this must acquire self.lock first.
+        """
         temp_file = None
         try:
             logger.info("="*60)
@@ -118,8 +121,10 @@ class DataManager:
             logger.info(f"   Parent writable: {os.access(DATA_FILE.parent, os.W_OK)}")
             logger.info(f"   Modifications being saved: {self.modification_count}")
             
-            file_lock = FileLock(str(LOCK_FILE))
-            logger.info(f"   Lock file: {LOCK_FILE.absolute()}")
+            # Use lock file based on DATA_FILE, not global LOCK_FILE
+            lock_file = str(DATA_FILE) + '.lock'
+            file_lock = FileLock(lock_file)
+            logger.info(f"   Lock file: {lock_file}")
             
             with file_lock:
                 logger.info(f"   🔒 Lock acquired")
@@ -263,11 +268,13 @@ class DataManager:
             
             self.in_memory_data = new_data
             self.data_version = self._compute_hash(self.in_memory_data)
-            self.modification_count = 0
             self.upload_timestamp = datetime.now()
             
-            # Save immediately
+            # Save immediately - only reset modification_count after successful save
             success = await self._save_to_disk()
+            
+            # modification_count is reset in _save_to_disk() if successful
+            # If save failed, keep the count so auto-save will retry
             
             return {
                 "status": "success" if success else "error",
