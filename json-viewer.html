@@ -719,10 +719,7 @@
                 updateNavigation();
                 updateFilters();
                 
-                // Start stats polling
-                startStatsPolling();
-                
-                // Update stats immediately
+                // Update stats once on initial load
                 await updateStats();
                 
                 // Show save error if any
@@ -989,19 +986,64 @@
             }
         }
 
-        function nextItem() {
-            if (filteredIndices.length > 0 && currentFilteredIndex < filteredIndices.length - 1) {
-                if (hasChanges && !confirm('יש שינויים שלא נשמרו. האם להמשיך?')) {
-                    return;
+        async function nextItem() {
+            if (hasChanges && !confirm('יש שינויים שלא נשמרו. האם להמשיך?')) {
+                return;
+            }
+            
+            // Use server-side /next endpoint to avoid collisions
+            const filterStatus = document.getElementById('filterStatus')?.value || null;
+            const filterLLMStatus = document.getElementById('filterLLMStatus')?.value || null;
+            
+            try {
+                const params = new URLSearchParams({
+                    current_index: currentIndex.toString()
+                });
+                if (filterStatus) params.append('filter_status', filterStatus);
+                if (filterLLMStatus) params.append('filter_llm_status', filterLLMStatus);
+                
+                const response = await fetch(`/next?${params}`, {
+                    headers: {
+                        'X-Username': username
+                    }
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
                 }
+                
+                const result = await response.json();
+                
+                if (result.index !== null && result.index !== undefined) {
+                    displayItem(result.index);
+                    updateNavigation();
+                    hasChanges = false;
+                    
+                    // Update stats after navigation
+                    updateLocalStats();
+                    
+                    // Show info if other users are active
+                    if (result.occupied_count > 0) {
+                        console.log(`Skipped ${result.occupied_count} records being viewed by other users`);
+                    }
+                } else {
+                    alert(result.message || 'No more records available');
+                }
+            } catch (error) {
+                console.error('Error getting next record:', error);
+                // Fallback to client-side logic
+                nextItemClientSide();
+            }
+        }
+        
+        function nextItemClientSide() {
+            // Fallback client-side navigation
+            if (filteredIndices.length > 0 && currentFilteredIndex < filteredIndices.length - 1) {
                 const newIndex = filteredIndices[currentFilteredIndex + 1];
                 displayItem(newIndex);
                 updateNavigation();
                 hasChanges = false;
             } else if (currentIndex < data.length - 1 && filteredIndices.length === 0) {
-                if (hasChanges && !confirm('יש שינויים שלא נשמרו. האם להמשיך?')) {
-                    return;
-                }
                 displayItem(currentIndex + 1);
                 updateNavigation();
                 hasChanges = false;
@@ -1351,19 +1393,6 @@
         }
 
         // Stats polling and display functions
-        function startStatsPolling() {
-            // Stop existing polling
-            if (statsPollingInterval) {
-                clearInterval(statsPollingInterval);
-            }
-            
-            // Poll every 10 seconds
-            statsPollingInterval = setInterval(async () => {
-                await updateStats();
-                await checkReloadRequired();
-            }, 10000);
-        }
-        
         async function updateStats() {
             // First update local stats immediately
             updateLocalStats();
