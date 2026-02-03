@@ -650,10 +650,10 @@ async def health_check():
 async def get_lm_paragraph(ref_path: str):
     """Get Likutei Moharan paragraph text from reference path"""
     try:
-        # Load LM JSON
-        lm_file = DATA_FOLDER / "Likutei_Moharan_refs.json"
+        # Load LM JSON from app's data/ folder (constants, not user data)
+        lm_file = Path("data") / "Likutei_Moharan_refs.json"
         if not lm_file.exists():
-            raise HTTPException(status_code=404, detail="Likutei Moharan JSON not found")
+            raise HTTPException(status_code=404, detail=f"Likutei Moharan JSON not found at {lm_file.absolute()}")
         
         with open(lm_file, 'r', encoding='utf-8') as f:
             lm_data = json.load(f)
@@ -661,13 +661,23 @@ async def get_lm_paragraph(ref_path: str):
         # Parse the reference path (e.g., "Likutei Moharan.61.1.3" or "Likutei Moharan%2C_Part_II.23.1.5")
         # Decode URL encoding
         ref_path = ref_path.replace('%2C_', ', ')
+        # Replace underscores with spaces in the book name (first part before the first dot)
+        # Sefaria uses underscores in URLs but the JSON uses spaces
         parts = ref_path.split('.')
+        if parts:
+            parts[0] = parts[0].replace('_', ' ')
+        
+        logger.info(f"📖 Looking up reference: original={ref_path}, parts={parts}")
+        logger.info(f"   Available top-level keys: {list(lm_data.keys())}")
         
         # Navigate through the JSON structure
         current = lm_data
-        for part in parts:
+        for i, part in enumerate(parts):
+            logger.info(f"   Step {i}: navigating with part='{part}', current type={type(current).__name__}")
             if isinstance(current, dict):
+                logger.info(f"      Dict keys available: {list(current.keys())[:10]}")
                 current = current.get(part)
+                logger.info(f"      After get('{part}'): {type(current).__name__ if current else 'None'}")
             elif isinstance(current, list):
                 try:
                     idx = int(part) - 1  # Convert to 0-based index
@@ -681,7 +691,8 @@ async def get_lm_paragraph(ref_path: str):
                 current = None
             
             if current is None:
-                raise HTTPException(status_code=404, detail=f"Reference not found: {ref_path}")
+                logger.error(f"❌ Reference not found at step {i}, part='{part}'")
+                raise HTTPException(status_code=404, detail=f"Reference not found: {'.'.join(parts)} (failed at part '{part}')")
         
         # Return the text
         if isinstance(current, str):

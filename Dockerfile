@@ -14,6 +14,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app.py .
 COPY json-viewer.html .
 COPY tmp_lh_links.json* ./
+COPY data/ ./data/
 
 # Expose the port
 EXPOSE 7860
