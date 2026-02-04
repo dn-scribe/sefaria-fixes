@@ -17,6 +17,7 @@ import asyncio
 from filelock import FileLock
 import hashlib
 from collections import defaultdict, Counter
+import tempfile
 
 # Configure logging with immediate flushing for Cloud Run
 import sys
@@ -46,7 +47,6 @@ SAVE_THRESHOLD_MODIFICATIONS = int(os.getenv("SAVE_THRESHOLD_MODIFICATIONS", "3"
 
 # Global data manager instance
 data_manager = None
-lock = asyncio.Lock()
 
 # CORS middleware
 app.add_middleware(
@@ -106,8 +106,12 @@ class DataManager:
                 return json.load(f)
     
     async def _save_to_disk(self) -> bool:
-        """Save data to JSON file with file locking. Returns success status.
-        Note: Caller should already hold self.lock"""
+        """Save data to JSON file with file locking and atomic writes. Returns success status.
+        
+        IMPORTANT: This method assumes the caller already holds self.lock to ensure
+        thread-safety. All public methods that call this must acquire self.lock first.
+        """
+        temp_file = None
         try:
             logger.info("="*60)
             logger.info(f"💾 ATTEMPTING SAVE TO DISK: {len(self.in_memory_data)} records")
@@ -117,23 +121,38 @@ class DataManager:
             logger.info(f"   Parent writable: {os.access(DATA_FILE.parent, os.W_OK)}")
             logger.info(f"   Modifications being saved: {self.modification_count}")
             
-            file_lock = FileLock(str(LOCK_FILE))
-            logger.info(f"   Lock file: {LOCK_FILE.absolute()}")
+            # Use lock file based on DATA_FILE, not global LOCK_FILE
+            lock_file = str(DATA_FILE) + '.lock'
+            file_lock = FileLock(lock_file)
+            logger.info(f"   Lock file: {lock_file}")
             
             with file_lock:
                 logger.info(f"   🔒 Lock acquired")
                 
-                # Write new data
-                logger.info(f"   ✍️  Writing JSON data...")
-                with open(DATA_FILE, 'w', encoding='utf-8') as f:
+                # Write to temporary file first (atomic write pattern)
+                logger.info(f"   ✍️  Writing JSON data to temp file...")
+                with tempfile.NamedTemporaryFile(
+                    mode='w',
+                    encoding='utf-8',
+                    dir=DATA_FILE.parent,
+                    delete=False,
+                    suffix='.tmp'
+                ) as f:
+                    temp_file = f.name
                     json.dump(self.in_memory_data, f, ensure_ascii=False, indent=2)
                     f.flush()
                     os.fsync(f.fileno())
                 
-                logger.info(f"   ✍️  File written, checking...")
+                logger.info(f"   ✍️  Temp file written, performing atomic rename...")
+                
+                # Atomic rename (replaces existing file)
+                os.rename(temp_file, DATA_FILE)
+                temp_file = None  # Successfully moved
+                
+                logger.info(f"   ✍️  File renamed, checking...")
                 
                 if not DATA_FILE.exists():
-                    raise Exception(f"File does not exist after write: {DATA_FILE}")
+                    raise Exception(f"File does not exist after rename: {DATA_FILE}")
                 
                 file_size = DATA_FILE.stat().st_size
                 file_mtime = datetime.fromtimestamp(DATA_FILE.stat().st_mtime)
@@ -144,6 +163,7 @@ class DataManager:
                 logger.info(f"   Saved at: {datetime.now().isoformat()}")
                 logger.info("="*60)
                 
+                # Only reset counters after successful atomic write
                 self.last_save_time = datetime.now()
                 self.modification_count = 0
                 self.last_save_error = None
@@ -154,6 +174,13 @@ class DataManager:
             import traceback
             traceback.print_exc()
             self.last_save_error = error_msg
+            # Clean up temp file if it still exists
+            if temp_file and os.path.exists(temp_file):
+                try:
+                    os.unlink(temp_file)
+                    logger.info(f"   🧹 Cleaned up temp file: {temp_file}")
+                except Exception as cleanup_error:
+                    logger.error(f"   ❌ Failed to clean up temp file: {cleanup_error}")
             return False
     
     async def get_data(self, username: Optional[str] = None) -> Dict[str, Any]:
@@ -218,16 +245,36 @@ class DataManager:
                 "auto_saved": save_triggered
             }
     
-    async def replace_all_data(self, new_data: List[Dict[str, Any]], username: Optional[str] = None) -> Dict[str, Any]:
-        """Replace all data (used by upload and legacy save)"""
+    async def replace_all_data(self, new_data: List[Dict[str, Any]], username: Optional[str] = None, expected_version: Optional[str] = None) -> Dict[str, Any]:
+        """Replace all data (used by upload and legacy save)
+        
+        Args:
+            new_data: New data to replace existing data
+            username: User making the change
+            expected_version: Expected version for conflict detection (optional)
+        
+        Returns:
+            Dict with status, message, and version info
+        """
         async with self.lock:
+            # Check for conflicts if expected version provided
+            if expected_version and expected_version != self.data_version:
+                return {
+                    "status": "conflict",
+                    "message": "Data has been modified by another user. Please reload.",
+                    "current_version": self.data_version,
+                    "expected_version": expected_version
+                }
+            
             self.in_memory_data = new_data
             self.data_version = self._compute_hash(self.in_memory_data)
-            self.modification_count = 0
             self.upload_timestamp = datetime.now()
             
-            # Save immediately
+            # Save immediately - only reset modification_count after successful save
             success = await self._save_to_disk()
+            
+            # modification_count is reset in _save_to_disk() if successful
+            # If save failed, keep the count so auto-save will retry
             
             return {
                 "status": "success" if success else "error",
@@ -338,33 +385,34 @@ class DataManager:
                 "message": "No available records matching filters"
             }
     
-    def get_stats(self, filter_status: Optional[str] = None) -> Dict[str, Any]:
-        """Get statistics about current data"""
-        # Compute stats from in-memory data (includes unsaved changes)
-        status_counts = Counter(item.get("Status", "unknown") for item in self.in_memory_data)
-        
-        # Filter if requested
-        visible_records = len(self.in_memory_data)
-        if filter_status:
-            visible_records = status_counts.get(filter_status, 0)
-        
-        # Active users (active in last 5 minutes)
-        now = datetime.now()
-        active_users = [
-            user for user, last_active in self.user_activity.items()
-            if now - last_active < timedelta(minutes=5)
-        ]
-        
-        return {
-            "total_records": len(self.in_memory_data),
-            "visible_records": visible_records,
-            "by_status": dict(status_counts),
-            "unsaved_changes": self.modification_count,
-            "last_save": self.last_save_time.isoformat() if self.last_save_time else None,
-            "last_save_error": self.last_save_error,
-            "active_users": len(active_users),
-            "active_user_names": active_users
-        }
+    async def get_stats(self, filter_status: Optional[str] = None) -> Dict[str, Any]:
+        """Get statistics about current data (with proper locking)"""
+        async with self.lock:
+            # Compute stats from in-memory data (includes unsaved changes)
+            status_counts = Counter(item.get("Status", "unknown") for item in self.in_memory_data)
+            
+            # Filter if requested
+            visible_records = len(self.in_memory_data)
+            if filter_status:
+                visible_records = status_counts.get(filter_status, 0)
+            
+            # Active users (active in last 5 minutes)
+            now = datetime.now()
+            active_users = [
+                user for user, last_active in self.user_activity.items()
+                if now - last_active < timedelta(minutes=5)
+            ]
+            
+            return {
+                "total_records": len(self.in_memory_data),
+                "visible_records": visible_records,
+                "by_status": dict(status_counts),
+                "unsaved_changes": self.modification_count,
+                "last_save": self.last_save_time.isoformat() if self.last_save_time else None,
+                "last_save_error": self.last_save_error,
+                "active_users": len(active_users),
+                "active_user_names": active_users
+            }
 
 
 @app.on_event("startup")
@@ -425,7 +473,7 @@ async def get_stats(
     if not data_manager:
         raise HTTPException(status_code=500, detail="Data manager not initialized")
     
-    stats = data_manager.get_stats(filter_status)
+    stats = await data_manager.get_stats(filter_status)
     return stats
 
 
@@ -521,33 +569,32 @@ async def save_changes(
     if not data_manager:
         raise HTTPException(status_code=500, detail="Data manager not initialized")
     
-    async with lock:
-        # Check for conflicts if client provided version
-        if client_version and client_version != data_manager.data_version:
-            return JSONResponse(
-                status_code=409,
-                content={
-                    "error": "conflict",
-                    "message": "Data has been modified by another user. Please reload.",
-                    "current_version": data_manager.data_version
-                }
-            )
-        
-        # Parse the incoming data
-        body = await request.json()
-        new_data = body if isinstance(body, list) else body.get("data", [])
-        
-        # Replace all data
-        result = await data_manager.replace_all_data(new_data, username)
-        
-        return {
-            "status": result["status"],
-            "message": result["message"],
-            "version": result["version"],
-            "timestamp": datetime.now().isoformat(),
-            "saved_by": username,
-            "save_error": result.get("save_error")
-        }
+    # Parse the incoming data
+    body = await request.json()
+    new_data = body if isinstance(body, list) else body.get("data", [])
+    
+    # Replace all data (version check is now atomic inside replace_all_data)
+    result = await data_manager.replace_all_data(new_data, username, expected_version=client_version)
+    
+    # Check for conflicts
+    if result.get("status") == "conflict":
+        return JSONResponse(
+            status_code=409,
+            content={
+                "error": "conflict",
+                "message": result["message"],
+                "current_version": result["current_version"]
+            }
+        )
+    
+    return {
+        "status": result["status"],
+        "message": result["message"],
+        "version": result["version"],
+        "timestamp": datetime.now().isoformat(),
+        "saved_by": username,
+        "save_error": result.get("save_error")
+    }
 
 
 @app.post("/upload")

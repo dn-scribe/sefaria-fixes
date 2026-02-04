@@ -8,8 +8,10 @@ Default: tmp_lh_links.json
 import json
 import os
 import sys
+import tempfile
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
+from filelock import FileLock
 
 # Get filename from command line or use default
 JSON_FILE = sys.argv[1] if len(sys.argv) > 1 else 'tmp_lh_links.json'
@@ -38,8 +40,11 @@ class JSONEditorHandler(BaseHTTPRequestHandler):
             self.end_headers()
             
             try:
-                with open(JSON_FILE, 'r', encoding='utf-8') as f:
-                    self.wfile.write(f.read().encode('utf-8'))
+                # Use file locking for safe concurrent reads
+                file_lock = FileLock(JSON_FILE + '.lock')
+                with file_lock:
+                    with open(JSON_FILE, 'r', encoding='utf-8') as f:
+                        self.wfile.write(f.read().encode('utf-8'))
             except FileNotFoundError:
                 self.wfile.write(json.dumps({'error': 'File not found'}).encode('utf-8'))
         
@@ -53,20 +58,39 @@ class JSONEditorHandler(BaseHTTPRequestHandler):
             content_length = int(self.headers['Content-Length'])
             post_data = self.rfile.read(content_length)
             
+            temp_file = None
             try:
                 # Validate JSON
                 data = json.loads(post_data.decode('utf-8'))
                 
-                # Create backup
-                if os.path.exists(JSON_FILE):
-                    backup_file = JSON_FILE + '.backup'
-                    with open(JSON_FILE, 'r', encoding='utf-8') as f:
-                        with open(backup_file, 'w', encoding='utf-8') as bf:
-                            bf.write(f.read())
-                
-                # Write new data
-                with open(JSON_FILE, 'w', encoding='utf-8') as f:
-                    f.write(json.dumps(data, ensure_ascii=False, indent=2))
+                # Use file locking for safe concurrent writes
+                file_lock = FileLock(JSON_FILE + '.lock')
+                with file_lock:
+                    # Create backup with proper fsync
+                    if os.path.exists(JSON_FILE):
+                        backup_file = JSON_FILE + '.backup'
+                        with open(JSON_FILE, 'r', encoding='utf-8') as f:
+                            with open(backup_file, 'w', encoding='utf-8') as bf:
+                                bf.write(f.read())
+                                bf.flush()
+                                os.fsync(bf.fileno())  # Ensure backup is on disk
+                    
+                    # Write to temporary file first (atomic write pattern)
+                    with tempfile.NamedTemporaryFile(
+                        mode='w',
+                        encoding='utf-8',
+                        dir=os.path.dirname(JSON_FILE) or '.',
+                        delete=False,
+                        suffix='.tmp'
+                    ) as f:
+                        temp_file = f.name
+                        f.write(json.dumps(data, ensure_ascii=False, indent=2))
+                        f.flush()
+                        os.fsync(f.fileno())  # Ensure data is on disk
+                    
+                    # Atomic rename (replaces existing file)
+                    os.rename(temp_file, JSON_FILE)
+                    temp_file = None  # Successfully moved
                 
                 self.send_response(200)
                 self.send_header('Content-type', 'application/json')
@@ -75,6 +99,13 @@ class JSONEditorHandler(BaseHTTPRequestHandler):
                 self.wfile.write(json.dumps({'status': 'success', 'message': 'File saved'}).encode('utf-8'))
             
             except Exception as e:
+                # Clean up temp file if it still exists
+                if temp_file and os.path.exists(temp_file):
+                    try:
+                        os.unlink(temp_file)
+                    except Exception:
+                        pass
+                
                 self.send_response(500)
                 self.send_header('Content-type', 'application/json')
                 self.send_header('Access-Control-Allow-Origin', '*')
