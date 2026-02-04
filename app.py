@@ -250,12 +250,17 @@ class DataManager:
     async def force_save(self) -> Dict[str, Any]:
         """Force immediate save (admin function)"""
         async with self.lock:
+            mod_count_before_save = self.modification_count
             success = await self._save_to_disk()
             return {
                 "status": "success" if success else "error",
-                "message": f"Saved {len(self.in_memory_data)} records" if success else "Save failed",
+                "message": f"Saved {len(self.in_memory_data)} records to {DATA_FILE.absolute()}" if success else "Save failed",
                 "error": self.last_save_error,
-                "modifications_saved": self.modification_count if success else 0
+                "modifications_saved": mod_count_before_save,
+                "file_path": str(DATA_FILE.absolute()),
+                "file_exists": DATA_FILE.exists(),
+                "file_size": DATA_FILE.stat().st_size if DATA_FILE.exists() else 0,
+                "last_save_time": self.last_save_time.isoformat() if self.last_save_time else None
             }
     
     def _cleanup_stale_sessions(self):

@@ -1104,16 +1104,18 @@
             const statusSelect = document.querySelector('select[data-field="Status"]');
             if (statusSelect) {
                 const oldStatus = data[currentIndex].Status;
-                statusSelect.value = 'verified';
-                data[currentIndex].Status = 'verified';
                 
-                // Queue the update to server if status changed
+                // Queue the update to server BEFORE updating local data
                 if (oldStatus !== 'verified') {
                     queueUpdate(currentIndex, { Status: 'verified' });
                 }
+                
+                // Update local state
+                statusSelect.value = 'verified';
+                data[currentIndex].Status = 'verified';
             }
             
-            // Also save any other changes in fields
+            // Also save any other changes in fields (like manually edited fields)
             saveChanges();
             
             // Update local stats immediately (no server wait)
@@ -1225,27 +1227,34 @@
                         
                         // Update the input field with the cleaned reference
                         input.value = ref;
-                        data[currentIndex].RefBExact = ref;
                         
                         // Construct the clean link without query params
                         const cleanLink = url.origin + url.pathname;
-                        data[currentIndex].RefBExactLink = cleanLink;
+                        
+                        // Update the RefBExactLink field if it exists
+                        const linkField = document.querySelector('input[data-field="RefBExactLink"]');
+                        if (linkField) {
+                            linkField.value = cleanLink;
+                        }
+                        
+                        // Mark that we have unsaved changes
+                        hasChanges = true;
                         
                         // Fetch the LM snippet from the server
                         fetch(`/lm-paragraph/${encodeURIComponent(ref)}`)
                             .then(response => response.json())
                             .then(result => {
                                 if (result.text) {
-                                    // Update LMSnippet with the fetched text
-                                    data[currentIndex].LMSnippet = result.text;
-                                    
-                                    // Update the UI
+                                    // Update the UI elements (but NOT data[currentIndex] yet)
                                     const refbDisplay = document.querySelector('.refb-display');
                                     const refbEdit = document.querySelector('.refb-edit');
                                     const refbEditBtn = document.querySelector('.refb-edit-btn');
                                     
                                     // Make sure display mode is shown, not edit mode
                                     if (refbDisplay && refbEdit) {
+                                        // Update the textarea value so saveChanges() can detect it
+                                        refbEdit.value = result.text;
+                                        
                                         // Highlight matched words in the snippet
                                         let matchedWords = (data[currentIndex].MatchedWords || '').split(' ').filter(w => w.trim());
                                         let highlightedText = result.text;
@@ -1256,9 +1265,8 @@
                                             }
                                         });
                                         
-                                        // Update both display and edit areas
+                                        // Update display area
                                         refbDisplay.innerHTML = highlightedText;
-                                        refbEdit.value = result.text;
                                         
                                         // Ensure display mode is visible
                                         refbDisplay.style.display = 'block';
@@ -1269,15 +1277,21 @@
                                     console.log('✓ Fetched and updated LMSnippet');
                                 } else {
                                     console.warn('No text found for reference:', ref);
-                                    data[currentIndex].LMSnippet = '';
+                                    // Clear the snippet field on error
+                                    const refbEdit = document.querySelector('.refb-edit');
+                                    if (refbEdit) {
+                                        refbEdit.value = '';
+                                    }
                                 }
                             })
                             .catch(error => {
                                 console.error('Error fetching LM paragraph:', error);
                                 // Clear the snippet on error
-                                data[currentIndex].LMSnippet = '';
                                 const refbDisplay = document.querySelector('.refb-display');
                                 const refbEdit = document.querySelector('.refb-edit');
+                                if (refbEdit) {
+                                    refbEdit.value = '';
+                                }
                                 if (refbDisplay) {
                                     refbDisplay.textContent = 'Error fetching paragraph: ' + error.message;
                                     refbDisplay.style.display = 'block';
