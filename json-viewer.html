@@ -690,7 +690,7 @@
                     const msg = `✅ Saved to disk: ${result.modifications_saved} modifications, ${result.file_size} bytes`;
                     showSaveIndicator(msg, 'success', 5000);
                     console.log('Force save result:', result);
-                    // Update stats to show changes were saved
+                    // Refresh stats from server after save
                     await updateStats();
                 } else {
                     showSaveIndicator(`❌ ${result.detail || 'Save failed'}`, 'error', 5000);
@@ -1079,11 +1079,10 @@
             editableFields.forEach(input => {
                 const fieldName = input.dataset.field;
                 const newValue = input.value;
-                const oldValue = data[currentIndex][fieldName];
+                const oldValue = data[currentIndex] ? data[currentIndex][fieldName] : '';
                 
                 // Track if value changed
                 if (newValue !== oldValue) {
-                    data[currentIndex][fieldName] = newValue;
                     updates[fieldName] = newValue;
                 }
             });
@@ -1093,6 +1092,8 @@
                 // Try server update first (batched, fast)
                 if (username && dataVersion) {
                     queueUpdate(currentIndex, updates);
+                    // Refresh stats from server after update
+                    setTimeout(() => updateStats(), 500);
                     showSaveIndicator('✓ שינויים נשמרו', 'success', 1000);
                 } else {
                     // Fallback to full save for local mode
@@ -1473,24 +1474,9 @@
         }
         
         function updateLocalStats() {
-            const statusCounts = {};
-            data.forEach(item => {
-                const status = item.Status || 'unknown';
-                statusCounts[status] = (statusCounts[status] || 0) + 1;
-            });
-            
-            console.log('Local stats:', statusCounts);
-            
-            const totalEl = document.getElementById('statTotalRecords');
-            const pendingEl = document.getElementById('statPending');
-            const verifiedEl = document.getElementById('statVerified');
-            
-            if (totalEl) totalEl.textContent = data.length || 0;
-            if (pendingEl) pendingEl.textContent = statusCounts.Pending || statusCounts.pending || 0;
-            if (verifiedEl) verifiedEl.textContent = statusCounts.verified || 0;
-            
-            const panel = document.getElementById('statsPanel');
-            if (panel) panel.style.display = 'flex';
+            // DO NOT compute stats from local data array - it's out of sync
+            // Instead, always fetch from server
+            updateStats();
         }
         
         async function checkReloadRequired() {
