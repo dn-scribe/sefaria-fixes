@@ -608,10 +608,13 @@
             }
             
             try {
+                // First, save any current unsaved changes on the current record
+                saveChanges();
+                
                 // Wait for all pending updates to complete first
-                showSaveIndicator('⏳ Waiting for pending updates...', 'warning', 10000);
+                showSaveIndicator('⏳ Flushing pending updates to server...', 'warning', 10000);
                 await flushPendingUpdates();
-                showSaveIndicator('📥 Downloading...', 'success', 2000);
+                showSaveIndicator('📥 Downloading from server...', 'success', 2000);
                 
                 const response = await fetch('/download', {
                     headers: {
@@ -621,6 +624,7 @@
                 
                 if (response.ok) {
                     const filePath = response.headers.get('X-File-Path');
+                    const unsavedChanges = response.headers.get('X-Unsaved-Changes');
                     const blob = await response.blob();
                     const url = window.URL.createObjectURL(blob);
                     const a = document.createElement('a');
@@ -632,7 +636,10 @@
                     document.body.removeChild(a);
                     window.URL.revokeObjectURL(url);
                     
-                    showSaveIndicator('✅ Downloaded successfully', 'success', 2000);
+                    const msg = unsavedChanges > 0 
+                        ? `✅ Downloaded (${unsavedChanges} unsaved changes included)`
+                        : '✅ Downloaded successfully';
+                    showSaveIndicator(msg, 'success', 3000);
                     
                     // Show file path info
                     if (filePath) {
@@ -661,11 +668,14 @@
             }
             
             try {
+                // First, save any current unsaved changes on the current record
+                saveChanges();
+                
                 // Wait for all pending updates to complete first
-                showSaveIndicator('⏳ Waiting for pending updates...', 'warning', 10000);
+                showSaveIndicator('⏳ Flushing pending updates to server...', 'warning', 10000);
                 await flushPendingUpdates();
                 
-                showSaveIndicator('💾 Saving to disk...', 'warning', 3000);
+                showSaveIndicator('💾 Writing to disk...', 'warning', 3000);
                 
                 const response = await fetch('/force-save', {
                     method: 'POST',
@@ -677,7 +687,9 @@
                 const result = await response.json();
                 
                 if (response.ok) {
-                    showSaveIndicator(`✅ ${result.message}`, 'success', 3000);
+                    const msg = `✅ Saved to disk: ${result.modifications_saved} modifications, ${result.file_size} bytes`;
+                    showSaveIndicator(msg, 'success', 5000);
+                    console.log('Force save result:', result);
                     // Update stats to show changes were saved
                     await updateStats();
                 } else {
@@ -1110,31 +1122,17 @@
         }
 
         function verifyAndNext() {
-            // Set status to verified
+            // Set status to verified in the UI
             const statusSelect = document.querySelector('select[data-field="Status"]');
             if (statusSelect) {
-                const oldStatus = data[currentIndex].Status;
-                
-                // Update the UI select element
                 statusSelect.value = 'verified';
-                
-                // Queue the update to server BEFORE updating local data
-                if (oldStatus !== 'verified') {
-                    // Only update data[currentIndex] after successful server update
-                    queueUpdate(currentIndex, { Status: 'verified' }).then(() => {
-                        data[currentIndex].Status = 'verified';
-                        updateLocalStats();
-                    });
-                } else {
-                    // Already verified, just update local
-                    data[currentIndex].Status = 'verified';
-                }
             }
             
-            // Also save any other changes in fields (like manually edited fields)
+            // saveChanges() will detect the Status change and queue it to the server
+            // It will also update data[currentIndex] and any other changed fields
             saveChanges();
             
-            // Wait a bit for save to complete, then move to next
+            // Wait a bit for saves to be queued, then move to next
             setTimeout(() => {
                 nextItem();
             }, 100);
