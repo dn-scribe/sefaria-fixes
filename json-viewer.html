@@ -608,6 +608,11 @@
             }
             
             try {
+                // Wait for all pending updates to complete first
+                showSaveIndicator('⏳ Waiting for pending updates...', 'warning', 10000);
+                await flushPendingUpdates();
+                showSaveIndicator('📥 Downloading...', 'success', 2000);
+                
                 const response = await fetch('/download', {
                     headers: {
                         'X-Username': username
@@ -627,9 +632,10 @@
                     document.body.removeChild(a);
                     window.URL.revokeObjectURL(url);
                     
+                    showSaveIndicator('✅ Downloaded successfully', 'success', 2000);
+                    
                     // Show file path info
                     if (filePath) {
-                        alert(`File downloaded from: ${filePath}`);
                         document.getElementById('filePathInfo').innerHTML = 
                             `<strong>Data file location:</strong> ${filePath}`;
                     }
@@ -655,6 +661,10 @@
             }
             
             try {
+                // Wait for all pending updates to complete first
+                showSaveIndicator('⏳ Waiting for pending updates...', 'warning', 10000);
+                await flushPendingUpdates();
+                
                 showSaveIndicator('💾 Saving to disk...', 'warning', 3000);
                 
                 const response = await fetch('/force-save', {
@@ -1105,21 +1115,24 @@
             if (statusSelect) {
                 const oldStatus = data[currentIndex].Status;
                 
+                // Update the UI select element
+                statusSelect.value = 'verified';
+                
                 // Queue the update to server BEFORE updating local data
                 if (oldStatus !== 'verified') {
-                    queueUpdate(currentIndex, { Status: 'verified' });
+                    // Only update data[currentIndex] after successful server update
+                    queueUpdate(currentIndex, { Status: 'verified' }).then(() => {
+                        data[currentIndex].Status = 'verified';
+                        updateLocalStats();
+                    });
+                } else {
+                    // Already verified, just update local
+                    data[currentIndex].Status = 'verified';
                 }
-                
-                // Update local state
-                statusSelect.value = 'verified';
-                data[currentIndex].Status = 'verified';
             }
             
             // Also save any other changes in fields (like manually edited fields)
             saveChanges();
-            
-            // Update local stats immediately (no server wait)
-            updateLocalStats();
             
             // Wait a bit for save to complete, then move to next
             setTimeout(() => {
@@ -1574,6 +1587,20 @@
             
             // Continue processing if there are more updates
             setTimeout(() => processUpdates(), 50);
+        }
+
+        // Wait for all pending updates to complete
+        async function flushPendingUpdates() {
+            return new Promise((resolve) => {
+                const checkQueue = () => {
+                    if (pendingUpdates.length === 0 && !isProcessingUpdates) {
+                        resolve();
+                    } else {
+                        setTimeout(checkQueue, 100);
+                    }
+                };
+                checkQueue();
+            });
         }
 
         // Keyboard navigation
