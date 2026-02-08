@@ -3,7 +3,7 @@ FastAPI application for JSON Link Viewer & Editor
 Supports multi-user concurrent editing with conflict detection
 Features: In-memory data management, batch saving, real-time statistics
 """
-from fastapi import FastAPI, HTTPException, Request, Header, UploadFile, File
+from fastapi import FastAPI, HTTPException, Request, Header, UploadFile, File, BackgroundTasks
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -69,9 +69,13 @@ class DataManager:
         self.last_save_error: Optional[str] = None
         self.data_version: str = ""
         self.user_activity: Dict[str, datetime] = {}  # Track active users
-        self.user_current_record: Dict[str, int] = {}  # Track which record each user is viewing
+        self.session_activity: Dict[str, datetime] = {}  # Track active sessions
+        self.session_current_record: Dict[str, int] = {}  # Track which record each session is viewing
+        self.session_user: Dict[str, str] = {}  # Map session -> username
         self.upload_timestamp: Optional[datetime] = None  # Track when upload happened
         self.lock = asyncio.Lock()
+        self._stats_cache: Dict[str, Any] = {}
+        self._stats_cache_time: Optional[datetime] = None
         
     async def initialize(self):
         """Load initial data from disk"""
@@ -89,6 +93,8 @@ class DataManager:
             
             self.modification_count = 0
             self.last_save_error = None
+            self._stats_cache = {}
+            self._stats_cache_time = None
             logger.info(f"✅ DataManager initialized with {len(self.in_memory_data)} records")
     
     def _compute_hash(self, data: List[Dict]) -> str:
@@ -264,21 +270,23 @@ class DataManager:
             }
     
     def _cleanup_stale_sessions(self):
-        """Remove inactive users (>10 minutes)"""
+        """Remove inactive sessions (>10 minutes)"""
         now = datetime.now()
-        stale_users = [
-            user for user, last_active in self.user_activity.items()
+        stale_sessions = [
+            session_id for session_id, last_active in self.session_activity.items()
             if now - last_active > timedelta(minutes=10)
         ]
-        for user in stale_users:
-            logger.info(f"🧹 Cleaning up stale session for user: {user}")
-            del self.user_activity[user]
-            if user in self.user_current_record:
-                del self.user_current_record[user]
+        for session_id in stale_sessions:
+            logger.info(f"🧹 Cleaning up stale session: {session_id}")
+            del self.session_activity[session_id]
+            self.session_user.pop(session_id, None)
+            if session_id in self.session_current_record:
+                del self.session_current_record[session_id]
     
     async def get_next_record(
         self,
         username: str,
+        session_id: str,
         current_index: Optional[int] = None,
         filter_status: Optional[str] = None,
         filter_llm_status: Optional[str] = None
@@ -287,14 +295,16 @@ class DataManager:
         async with self.lock:
             # Update user activity
             self.user_activity[username] = datetime.now()
+            self.session_activity[session_id] = datetime.now()
+            self.session_user[session_id] = username
             
             # Cleanup stale sessions
             self._cleanup_stale_sessions()
             
-            # Get set of indices currently being viewed by other users
+            # Get set of indices currently being viewed by other sessions
             occupied_indices = {
-                idx for user, idx in self.user_current_record.items()
-                if user != username
+                idx for sid, idx in self.session_current_record.items()
+                if sid != session_id
             }
             
             # Start searching from current_index + 1, or 0 if not provided
@@ -318,9 +328,9 @@ class DataManager:
                     continue
                 
                 # Found a match - mark as in use
-                self.user_current_record[username] = idx
+                self.session_current_record[session_id] = idx
                 
-                logger.info(f"📍 User {username} assigned to record {idx} (skipped {len(occupied_indices)} occupied)")
+                logger.info(f"📍 Session {session_id} (user {username}) assigned to record {idx} (skipped {len(occupied_indices)} occupied)")
                 
                 return {
                     "index": idx,
@@ -337,16 +347,60 @@ class DataManager:
                 "active_users": list(self.user_activity.keys()),
                 "message": "No available records matching filters"
             }
-    
+
+    async def get_record_by_index(self, username: str, session_id: str, index: int) -> Dict[str, Any]:
+        """Get a specific record by index if not occupied by another user"""
+        async with self.lock:
+            if index < 0 or index >= len(self.in_memory_data):
+                raise ValueError(f"Invalid index: {index}")
+
+            # Update user activity
+            self.user_activity[username] = datetime.now()
+            self.session_activity[session_id] = datetime.now()
+            self.session_user[session_id] = username
+            self._cleanup_stale_sessions()
+
+            occupied_by_other = any(
+                sid != session_id and idx == index
+                for sid, idx in self.session_current_record.items()
+            )
+            if occupied_by_other:
+                raise PermissionError("Record is currently in use by another user")
+
+            self.session_current_record[session_id] = index
+
+            return {
+                "index": index,
+                "record": self.in_memory_data[index],
+                "active_users": list(self.user_activity.keys())
+            }
+
     def get_stats(self, filter_status: Optional[str] = None) -> Dict[str, Any]:
         """Get statistics about current data"""
-        # Compute stats from in-memory data (includes unsaved changes)
-        status_counts = Counter(item.get("Status", "unknown") for item in self.in_memory_data)
+        now = datetime.now()
+        cache_valid = (
+            self._stats_cache_time is not None
+            and (now - self._stats_cache_time) < timedelta(seconds=2)
+            and self._stats_cache.get("data_version") == self.data_version
+        )
+
+        if cache_valid:
+            status_counts = self._stats_cache["by_status"]
+            total_records = self._stats_cache["total_records"]
+        else:
+            status_counts = Counter(item.get("Status", "unknown") for item in self.in_memory_data)
+            total_records = len(self.in_memory_data)
+            self._stats_cache = {
+                "data_version": self.data_version,
+                "by_status": dict(status_counts),
+                "total_records": total_records
+            }
+            self._stats_cache_time = now
         
         # Filter if requested
-        visible_records = len(self.in_memory_data)
+        visible_records = total_records
         if filter_status:
-            visible_records = status_counts.get(filter_status, 0)
+            visible_records = self._stats_cache["by_status"].get(filter_status, 0)
         
         # Active users (active in last 5 minutes)
         now = datetime.now()
@@ -356,9 +410,9 @@ class DataManager:
         ]
         
         return {
-            "total_records": len(self.in_memory_data),
+            "total_records": total_records,
             "visible_records": visible_records,
-            "by_status": dict(status_counts),
+            "by_status": self._stats_cache["by_status"],
             "unsaved_changes": self.modification_count,
             "last_save": self.last_save_time.isoformat() if self.last_save_time else None,
             "last_save_error": self.last_save_error,
@@ -387,7 +441,7 @@ async def shutdown_event():
 @app.get("/", response_class=HTMLResponse)
 async def read_root():
     """Serve the HTML viewer"""
-    html_file = Path("json-viewer.html")
+    html_file = Path("jsov-viewer.html")
     if not html_file.exists():
         raise HTTPException(status_code=404, detail="HTML file not found")
     
@@ -419,11 +473,16 @@ async def get_version():
 @app.get("/stats")
 async def get_stats(
     username: Optional[str] = Header(None, alias="X-Username"),
+    session_id: Optional[str] = Header(None, alias="X-Session-Id"),
     filter_status: Optional[str] = None
 ):
     """Get statistics about the data"""
     if not data_manager:
         raise HTTPException(status_code=500, detail="Data manager not initialized")
+    if username and session_id:
+        data_manager.user_activity[username] = datetime.now()
+        data_manager.session_activity[session_id] = datetime.now()
+        data_manager.session_user[session_id] = username
     
     stats = data_manager.get_stats(filter_status)
     return stats
@@ -432,6 +491,7 @@ async def get_stats(
 @app.get("/next")
 async def get_next_record(
     username: Optional[str] = Header(None, alias="X-Username"),
+    session_id: Optional[str] = Header(None, alias="X-Session-Id"),
     current_index: Optional[int] = None,
     filter_status: Optional[str] = None,
     filter_llm_status: Optional[str] = None
@@ -439,6 +499,8 @@ async def get_next_record(
     """Get the next available record that matches filters and is not being viewed by another user"""
     if not username:
         raise HTTPException(status_code=400, detail="Username header required")
+    if not session_id:
+        raise HTTPException(status_code=400, detail="Session ID header required")
     
     if not data_manager:
         raise HTTPException(status_code=500, detail="Data manager not initialized")
@@ -447,6 +509,7 @@ async def get_next_record(
     
     result = await data_manager.get_next_record(
         username=username,
+        session_id=session_id,
         current_index=current_index,
         filter_status=filter_status,
         filter_llm_status=filter_llm_status
@@ -455,10 +518,34 @@ async def get_next_record(
     return result
 
 
+@app.get("/record")
+async def get_record(
+    index: int,
+    username: Optional[str] = Header(None, alias="X-Username"),
+    session_id: Optional[str] = Header(None, alias="X-Session-Id")
+):
+    """Get a specific record by index (if not occupied by another user)"""
+    if not username:
+        raise HTTPException(status_code=400, detail="Username header required")
+    if not session_id:
+        raise HTTPException(status_code=400, detail="Session ID header required")
+
+    if not data_manager:
+        raise HTTPException(status_code=500, detail="Data manager not initialized")
+
+    try:
+        return await data_manager.get_record_by_index(username=username, session_id=session_id, index=index)
+    except PermissionError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @app.post("/update")
 async def update_record(
     request: Request,
-    username: Optional[str] = Header(None, alias="X-Username")
+    username: Optional[str] = Header(None, alias="X-Username"),
+    session_id: Optional[str] = Header(None, alias="X-Session-Id")
 ):
     """Update a single record (fast, in-memory only)"""
     if not data_manager:
@@ -468,7 +555,11 @@ async def update_record(
     index = body.get("index")
     updates = body.get("updates", {})
     
-    logger.info(f"📨 /update endpoint called: index={index}, updates={updates}, username={username}")
+    logger.info(f"📨 /update endpoint called: index={index}, updates={updates}, username={username}, session_id={session_id}")
+    if username and session_id:
+        data_manager.user_activity[username] = datetime.now()
+        data_manager.session_activity[session_id] = datetime.now()
+        data_manager.session_user[session_id] = username
     
     if index is None:
         raise HTTPException(status_code=400, detail="Missing 'index' field")
@@ -588,7 +679,10 @@ async def upload_file(
 
 
 @app.get("/download")
-async def download_file(username: Optional[str] = Header(None, alias="X-Username")):
+async def download_file(
+    username: Optional[str] = Header(None, alias="X-Username"),
+    background_tasks: BackgroundTasks = None
+):
     """Download the current JSON file (admin only) - includes unsaved changes from memory"""
     if username != ADMIN_USER:
         raise HTTPException(
@@ -608,18 +702,25 @@ async def download_file(username: Optional[str] = Header(None, alias="X-Username
     with open(temp_file, 'w', encoding='utf-8') as f:
         json.dump(current_data, f, ensure_ascii=False, indent=2)
     
-    try:
-        response = FileResponse(
-            path=temp_file,
-            filename=f"tmp_lh_links_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-            media_type="application/json"
-        )
-        response.headers["X-File-Path"] = str(DATA_FILE.absolute())
-        response.headers["X-Unsaved-Changes"] = str(data_info["unsaved_changes"])
-        return response
-    finally:
-        # Clean up temp file after response (done in background)
-        pass
+    def _cleanup_temp_file(path: Path) -> None:
+        try:
+            if path.exists():
+                path.unlink()
+                logger.info(f"🧹 Deleted temp download file: {path}")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to delete temp file {path}: {e}")
+
+    if background_tasks is not None:
+        background_tasks.add_task(_cleanup_temp_file, temp_file)
+
+    response = FileResponse(
+        path=temp_file,
+        filename=f"tmp_lh_links_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+        media_type="application/json"
+    )
+    response.headers["X-File-Path"] = str(DATA_FILE.absolute())
+    response.headers["X-Unsaved-Changes"] = str(data_info["unsaved_changes"])
+    return response
 
 
 @app.get("/health")

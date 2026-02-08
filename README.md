@@ -8,19 +8,24 @@ pinned: false
 license: mit
 app_port: 7860
 ---
-# Sefaria Fixes - JSON Link Viewer & Editor
+# Linking LH (Sefaria Fixes)
 
-A collaborative web application for reviewing and editing JSON link data with multi-user support.
+A collaborative web app for reviewing and editing JSON link data between Likutei Halakhot and Likutei Moharan.  
+The client never loads the full dataset; it works on a single record at a time. The server owns all data, assignment, and saves.
 
-**🚀 Live App:** https://dn-9281411-linking-lh.hf.space/
+**Live App:** https://dn-9281411-linking-lh.hf.space/
 
-## Features
+## Architecture
 
-- 🔄 Real-time collaborative editing with conflict detection
-- 👥 Multi-user support with change tracking
-- 🔒 Simple authentication for upload/download
-- 📝 Intuitive web interface for reviewing links
-- 🚀 Deployed on Hugging Face Spaces
+- **Server:** `app.py` (FastAPI)
+  - Loads the full JSON dataset into memory.
+  - Assigns **one record at a time** to each active session (`/next`).
+  - Prevents concurrent users (or tabs) from editing the same record.
+  - Batches updates and auto-saves after N modifications.
+- **Client:** `jsov-viewer.html`
+  - Prompts for username on load.
+  - Uses a **per-tab session ID** (`X-Session-Id`) to avoid multi-tab collisions.
+  - Only holds the current record and stats, never the full dataset.
 
 ## Quick Start
 
@@ -36,165 +41,74 @@ pip install -r requirements.txt
 python app.py
 ```
 
-3. Open your browser to `http://localhost:7860`
-
-### Environment Variables
-
-- `ADMIN_USER`: Username allowed to upload/download files (default: `danny`)
-- `PORT`: Server port (default: `7860`)
-
-## Hugging Face Deployment
-
-This app is configured for Hugging Face Spaces deployment.
-
-### Required Files
-
-The repository includes `HF_README.md` which should be renamed to `README.md` in your Hugging Face Space:
-
-```yaml
----
-title: Linking LH
-emoji: 🔗
-colorFrom: blue
-colorTo: green
-sdk: docker
-pinned: false
-license: mit
-app_port: 7860
----
+3. Open:
+```
+http://localhost:7860
 ```
 
-### Manual Deployment
+## Environment Variables
 
-1. Create a new Space on Hugging Face (https://huggingface.co/new-space)
-2. Choose "Docker" as the SDK
-3. Clone your Space locally:
-   ```bash
-   git clone https://huggingface.co/spaces/dn-9281411/linking-lh
-   ```
-4. Copy the application files to the Space directory
-5. Push to Hugging Face:
-   ```bash
-   git add .
-   git commit -m "Initial commit"
-   git push
-   ```
+- `ADMIN_USER` (default: `danny`)  
+  Username allowed to upload/download/force-save.
+- `PORT` (default: `7860`)
+- `DATA_FOLDER` (default: `.`)
+- `SAVE_THRESHOLD_MODIFICATIONS` (default: `3`)
 
-### GitHub to Hugging Face Sync
+## UX Flow
 
-The repository automatically syncs to Hugging Face Spaces via GitHub Actions.
-
-**Setup Instructions:**
-
-1. Create a Hugging Face access token:
-   - Go to https://huggingface.co/settings/tokens
-   - Create a new token with `write` access
-
-2. Add the token to GitHub Secrets:
-   - Go to your GitHub repository settings
-   - Navigate to Secrets and Variables → Actions
-   - Create a new secret named `HF_TOKEN`
-   - Paste your Hugging Face token
-
-3. Push to main branch - the workflow will automatically sync to Hugging Face
+1. User opens the page and enters a username.
+2. The server assigns a **single record** for review.
+3. Users can edit fields and save; updates are sent as diffs.
+4. Navigation uses `/next` (server selects the next unoccupied record).
+5. Admin (`ADMIN_USER`) can upload, download, and force-save.
 
 ## API Endpoints
 
-### Public Endpoints
+### Public
+- `GET /` - Web interface (`jsov-viewer.html`)
+- `GET /health` - Health check / version info
+- `GET /stats` - Aggregated stats (cached server-side)
+- `GET /next` - Next available record
+- `GET /record?index=N` - Fetch specific record (if not occupied)
+- `POST /update` - Update a single record (diff-based)
 
-- `GET /` - Web interface
-- `GET /data` - Get current data (with version info)
-- `GET /version` - Get current data version
-- `POST /save` - Save changes (requires username header)
-- `GET /health` - Health check
+### Admin Only
+- `POST /upload` - Upload a new JSON file
+- `GET /download` - Download current data (includes in-memory unsaved changes)
+- `POST /force-save` - Force write to disk
 
-### Admin-Only Endpoints (requires ADMIN_USER)
+### Required Headers
 
-- `POST /upload` - Upload new JSON file
-- `GET /download` - Download current JSON file
-
-### Usage with Authentication
-
-All requests should include the username header:
-
+All client requests include:
 ```bash
-curl -H "X-Username: yourname" http://localhost:7860/data
+X-Username: <username>
+X-Session-Id: <unique-per-tab-id>
 ```
 
-## Multi-User Support
+## Data Fields
 
-The application supports concurrent editing by multiple users:
+Each item is expected to include:
 
-- Each save includes a version hash
-- Conflicts are detected automatically
-- Users are prompted to reload if data changed
-- `fixed_by` field tracks who made changes
+- `RefA`, `RefALink`
+- `RefB`, `RefBLink`, `RefBExact`, `RefBExactLink`
+- `LHSnippet`, `LMSnippet`
+- `Status` (Pending/done/verified/rejected)
+- `MatchType`, `DeterministicScore`, `MatchedWords`
+- `fixed_by` and `fixed_at` (auto-populated when Status changes)
 
-## Data Structure
+## Files
 
-Each item should have the following fields:
+- `app.py` - FastAPI server
+- `jsov-viewer.html` - Client UI (single-record, server-backed)
+- `tmp_lh_links.json` - Primary dataset
+- `data/` - Auxiliary reference data
 
-- `RefA`, `RefALink` - Reference A and its link
-- `RefB`, `RefBLink`, `RefBExact`, `RefBExactLink` - Reference B details
-- `RefBExcerpt` - Text excerpt from Reference B
-- `Snippet` - Text snippet from Likutei Halakhot
-- `Status` - Current status (Pending/done/verified/rejected)
-- `MatchType`, `DeterministicScore`, `MatchedWords` - Matching metadata
-- `fixed_by` - Username who last changed the status (auto-populated)
-- `fixed_at` - Timestamp of last status change (auto-populated)
+## Hugging Face Deployment
 
-## License
+This repository is configured for Hugging Face Spaces (Docker).
+The metadata block at the top of this file is required by Spaces.
 
-MIT
+## Notes
 
-Find typos in Sefaria
-
-## 1st version
-Find end letters that appear in the middle of a word.
-
-## JSON Link Viewer & Editor
-
-An interactive web-based tool for reviewing and editing JSON link data between Likutei Halakhot and Likutei Moharan.
-
-### Features
-
-- **Two-column layout** comparing source (RefA) and target (RefB) references
-- **Editable fields**: Snippet, RefBExact, Status, LLM fields
-- **Navigation**: Previous/Next buttons, Go to item number
-- **Filtering**: Filter by Status and/or LLM Status
-- **Direct file editing**: Save changes directly to the original JSON file (no downloads)
-- **Auto-backup**: Creates `.backup` files before each save
-- **Keyboard shortcuts**:
-  - `Ctrl/Cmd + ←/→`: Navigate items
-  - `Ctrl/Cmd + S`: Save
-  - `Ctrl/Cmd + G`: Focus on Go to input
-
-### Usage
-
-#### With Local Server (Recommended - Direct File Editing)
-
-1. Start the server:
-   ```bash
-   python json-viewer-server.py tmp_lh_links.json
-   ```
-
-2. Open in browser:
-   ```
-   http://localhost:8000
-   ```
-
-3. Edit and save - changes save directly to the file!
-
-#### Standalone Mode (File Upload/Download)
-
-1. Open `json-viewer.html` directly in your browser
-2. Click "📁 בחר קובץ JSON" to upload your JSON file
-3. Make edits
-4. Click "שמור שינויים" to download the updated file
-
-### File Structure
-
-- `json-viewer.html` - The interactive viewer/editor interface
-- `json-viewer-server.py` - Local Python server for direct file editing
-- `tmp_lh_links.json` - JSON data file with link references
-
+- This project no longer supports local file upload in the client.
+- All editing is server-driven to avoid concurrent misalignment.

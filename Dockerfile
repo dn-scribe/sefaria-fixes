@@ -13,6 +13,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application files
 COPY app.py .
 COPY json-viewer.html .
+COPY jsov-viewer.html .
 COPY tmp_lh_links.json* ./
 COPY data/ ./data/
 
