@@ -221,6 +221,11 @@
         .field-value.large {
             min-height: 200px;
         }
+
+        .lh-snippet {
+            max-height: 320px;
+            overflow: auto;
+        }
         
         .field-value.editable {
             background: white;
@@ -496,6 +501,7 @@
         let historyStack = [];
         let lastFilters = { status: '', llm: '' };
         let sessionId = sessionStorage.getItem('sessionId') || '';
+        const DEFAULT_FILTERS = { status: 'Pending', llm: 'not_needed' };
         const matchedWordPalette = [
             '#fff59d', // soft yellow
             '#b3e5fc', // light blue
@@ -538,11 +544,132 @@
             return highlighted;
         }
 
+        // Hebrew gematria function to convert Hebrew numbers
+        function hebrewGematria(str) {
+            const gematriaMap = {
+                'א': 1, 'ב': 2, 'ג': 3, 'ד': 4, 'ה': 5, 'ו': 6, 'ז': 7, 'ח': 8, 'ט': 9,
+                'י': 10, 'כ': 20, 'ך': 20, 'ל': 30, 'מ': 40, 'ם': 40, 'נ': 50, 'ן': 50,
+                'ס': 60, 'ע': 70, 'פ': 80, 'ף': 80, 'צ': 90, 'ץ': 90, 'ק': 100, 'ר': 200,
+                'ש': 300, 'ת': 400
+            };
+            let total = 0;
+            for (let c of str) {
+                total += gematriaMap[c] || 0;
+            }
+            return total;
+        }
+
+        function collectSimanMatches(text) {
+            const simanPattern = /(סימן\s+([א-ת֑-ׇ"׳״'()]+)(?:\s+[א-ת֑-ׇ"׳״'()]+){0,3})/g;
+            const matches = [];
+            let match;
+            while ((match = simanPattern.exec(text)) !== null) {
+                const cleanSiman = match[2].replace(/[֑-ׇ"׳״'()]/g, '');
+                const simanValue = hebrewGematria(cleanSiman);
+                matches.push({
+                    start: match.index,
+                    end: match.index + match[1].length,
+                    simanValue
+                });
+            }
+            return matches;
+        }
+
+        function collectWordPositions(text, words) {
+            const positions = [];
+            words.forEach(word => {
+                if (!word) return;
+                const regex = new RegExp(escapeRegExp(word), 'g');
+                let match;
+                while ((match = regex.exec(text)) !== null) {
+                    positions.push(match.index);
+                }
+            });
+            return positions;
+        }
+
+        function closestDistance(index, positions) {
+            if (!positions.length) return Infinity;
+            let min = Infinity;
+            for (let pos of positions) {
+                const dist = Math.abs(index - pos);
+                if (dist < min) min = dist;
+            }
+            return min;
+        }
+
+        function pickFocusIndex(text, refBChapter, matchedWords) {
+            const simanMatches = collectSimanMatches(text);
+            const wordPositions = collectWordPositions(text, matchedWords);
+
+            let candidates = simanMatches;
+            if (refBChapter) {
+                const chapterMatches = simanMatches.filter(m => m.simanValue === refBChapter);
+                if (chapterMatches.length > 0) {
+                    candidates = chapterMatches;
+                }
+            }
+
+            if (candidates.length > 0) {
+                let best = candidates[0];
+                let bestDist = closestDistance(best.start, wordPositions);
+                for (let i = 1; i < candidates.length; i++) {
+                    const dist = closestDistance(candidates[i].start, wordPositions);
+                    if (dist < bestDist) {
+                        best = candidates[i];
+                        bestDist = dist;
+                    }
+                }
+                return best.start;
+            }
+
+            if (wordPositions.length > 0) {
+                return wordPositions[0];
+            }
+
+            return 0;
+        }
+
+        function makeFocusedExcerpt(text, focusIndex, radius = 260) {
+            if (text.length <= radius * 2) {
+                return text;
+            }
+
+            let start = Math.max(0, focusIndex - radius);
+            let end = Math.min(text.length, focusIndex + radius);
+
+            const leftBreak = text.lastIndexOf('\n', start);
+            if (leftBreak !== -1 && start - leftBreak < 80) {
+                start = leftBreak + 1;
+            }
+
+            const rightBreak = text.indexOf('\n', end);
+            if (rightBreak !== -1 && rightBreak - end < 80) {
+                end = rightBreak;
+            }
+
+            const prefix = start > 0 ? '… ' : '';
+            const suffix = end < text.length ? ' …' : '';
+            return `${prefix}${text.slice(start, end)}${suffix}`;
+        }
+
         function getActiveFilters() {
             return {
                 status: document.getElementById('filterStatus')?.value || '',
                 llm: document.getElementById('filterLLMStatus')?.value || ''
             };
+        }
+
+        function applyDefaultFilters() {
+            const statusSelect = document.getElementById('filterStatus');
+            const llmSelect = document.getElementById('filterLLMStatus');
+            if (statusSelect) statusSelect.value = DEFAULT_FILTERS.status;
+            if (llmSelect) llmSelect.value = DEFAULT_FILTERS.llm;
+            lastFilters = { ...DEFAULT_FILTERS };
+            const filterCounter = document.getElementById('filterCounter');
+            if (filterCounter) {
+                filterCounter.textContent = '(filtered by server)';
+            }
         }
 
         async function ensureUsername() {
@@ -905,24 +1032,11 @@ Saved to: ${result.saved_to}` : '';
                 }
             }
 
-            // Hebrew gematria function to convert Hebrew numbers
-            function hebrewGematria(str) {
-                const gematriaMap = {
-                    'א': 1, 'ב': 2, 'ג': 3, 'ד': 4, 'ה': 5, 'ו': 6, 'ז': 7, 'ח': 8, 'ט': 9,
-                    'י': 10, 'כ': 20, 'ך': 20, 'ל': 30, 'מ': 40, 'ם': 40, 'נ': 50, 'ן': 50,
-                    'ס': 60, 'ע': 70, 'פ': 80, 'ף': 80, 'צ': 90, 'ץ': 90, 'ק': 100, 'ר': 200,
-                    'ש': 300, 'ת': 400
-                };
-                let total = 0;
-                for (let c of str) {
-                    total += gematriaMap[c] || 0;
-                }
-                return total;
-            }
-
             // Highlight "בסימן" and following words - dark green if matches RefB chapter, light green otherwise
             const simanPattern = /(סימן\s+([א-ת֑-ׇ"׳״'()]+)(?:\s+[א-ת֑-ׇ"׳״'()]+){0,3})/g;
-            highlightedSnippet = highlightedSnippet.replace(simanPattern, (match, fullMatch, simanNumber) => {
+            const focusIndex = pickFocusIndex(snippetText, refBChapter, matchedWords);
+            const focusedSnippet = makeFocusedExcerpt(snippetText, focusIndex);
+            highlightedSnippet = focusedSnippet.replace(simanPattern, (match, fullMatch, simanNumber) => {
                 // Extract just the Hebrew letters from the siman number
                 const cleanSiman = simanNumber.replace(/[֑-ׇ"׳״'()]/g, '');
                 const simanValue = hebrewGematria(cleanSiman);
@@ -936,7 +1050,7 @@ Saved to: ${result.saved_to}` : '';
             // Then highlight each matched word with distinct colors
             highlightedSnippet = highlightMatchedWords(highlightedSnippet, matchedWords);
 
-            html += `<div class="field-value large" style="white-space: pre-wrap;">${highlightedSnippet}</div>`;
+            html += `<div class="field-value large lh-snippet" style="white-space: pre-wrap;">${highlightedSnippet}</div>`;
             html += '<button class="btn btn-verify-next" style="margin-top: 15px; padding: 12px 24px; font-size: 16px; font-weight: bold; background-color: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer; width: 100%;" onclick="verifyAndNext()">✓ Mark Verified and Save &gt;&gt;</button>';
             html += '</div>';
 
@@ -1474,6 +1588,8 @@ Saved to: ${result.saved_to}` : '';
         window.onload = function() {
             // Load commit info
             loadCommitInfo();
+
+            applyDefaultFilters();
 
             // Try to load from server first
             loadDataFromServer().catch(() => {

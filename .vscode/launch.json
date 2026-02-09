@@ -5,6 +5,13 @@
     "version": "0.2.0",
     "configurations": [
         {
+            "name": "Run App",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "app.py",
+            "console": "internalConsole",
+        },
+        {
             "name": "Pull book",
             "type": "debugpy",
             "request": "launch",
