@@ -513,19 +513,73 @@ def extract_links(refs_json, output_csv, lm_json, k_of_n, n_window, context_word
         if update_output_json and os.path.exists(output_json):
             with open(output_json, 'r', encoding='utf-8') as f:
                 existing = json.load(f)
-            # Use LHSnippet as part of key to uniquely identify each link occurrence
-            existing_map = {(row.get('RefA'), row.get('RefBExact'), row.get('LHSnippet')): i for i, row in enumerate(existing)}
+
+            def normalize_words(text):
+                if not text:
+                    return []
+                cleaned = ''.join(ch if ch.isalnum() or ch.isspace() else ' ' for ch in text)
+                return [w for w in cleaned.split() if w]
+
+            def snippet_similarity(a, b):
+                a_words = set(normalize_words(a))
+                b_words = set(normalize_words(b))
+                if not a_words or not b_words:
+                    return 0.0
+                overlap = len(a_words & b_words)
+                return overlap / max(len(a_words), len(b_words))
+
+            # Build lookup maps
+            exact_map = {}
+            refa_refb_map = {}
+            for i, row in enumerate(existing):
+                key_exact = (row.get('RefA'), row.get('RefB'), row.get('LHSnippet'))
+                exact_map.setdefault(key_exact, []).append(i)
+                key_refb = (row.get('RefA'), row.get('RefB'))
+                refa_refb_map.setdefault(key_refb, []).append(i)
+
+            preserved_exact = 0
+            preserved_fuzzy = 0
             preserved_count = 0
+
             for row in results:
-                key = (row.get('RefA'), row.get('RefBExact'), row.get('LHSnippet'))
-                idx = existing_map.get(key)
+                key_exact = (row.get('RefA'), row.get('RefB'), row.get('LHSnippet'))
+                idx_list = exact_map.get(key_exact)
+                idx = None
+                exact_hit = False
+                if idx_list:
+                    idx = idx_list.pop(0)
+                    exact_hit = True
+                if idx is None:
+                    # Fallback to RefA+RefB with snippet similarity
+                    candidates = []
+                    key_refb = (row.get('RefA'), row.get('RefB'))
+                    candidates = refa_refb_map.get(key_refb, [])
+
+                    if candidates:
+                        best_idx = None
+                        best_score = 0.0
+                        for cand_idx in candidates:
+                            score = snippet_similarity(row.get('LHSnippet'), existing[cand_idx].get('LHSnippet'))
+                            if score > best_score:
+                                best_score = score
+                                best_idx = cand_idx
+                        # Require a reasonable overlap to avoid mismatches
+                        if best_idx is not None and best_score >= 0.6:
+                            idx = best_idx
+
                 if idx is not None:
                     existing_status = existing[idx].get('Status', 'Pending')
                     if existing_status != 'Pending':
                         row['Status'] = existing_status
                         preserved_count += 1
+                        if exact_hit:
+                            preserved_exact += 1
+                        else:
+                            preserved_fuzzy += 1
+
             if preserved_count > 0:
-                print(f"Preserved {preserved_count} non-Pending statuses from existing JSON")
+                print(f"Preserved {preserved_count} non-Pending statuses from existing JSON "
+                      f"(exact: {preserved_exact}, fuzzy: {preserved_fuzzy})")
         with open(output_json, 'w', encoding='utf-8') as f:
             json.dump(results, f, ensure_ascii=False, indent=2)
     if llm_payloads_path:
