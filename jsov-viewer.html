@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Linking</title>
+    <link rel="icon" type="image/png" href="rn-favicon.png">
     <style>
         * {
             margin: 0;
@@ -42,6 +43,21 @@
         
         .header h1 {
             font-size: 24px;
+        }
+
+        .header-brand {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .header-logo {
+            width: 28px;
+            height: 28px;
+            border-radius: 6px;
+            background: white;
+            padding: 3px;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.2);
         }
         
         .file-upload {
@@ -482,7 +498,10 @@
     <div class="container">
         <div class="header">
             <div class="header-top">
-                <h1>Linking</h1>
+                <div class="header-brand">
+                    <img class="header-logo" src="rn-favicon.png" alt="RN">
+                    <h1>Linking</h1>
+                </div>
                 <div class="file-upload">
                     <input type="file" id="serverFileInput" accept=".json" onchange="uploadFileToServer(event)" style="display: none;">
                     <button class="btn btn-upload" id="uploadBtn" onclick="document.getElementById('serverFileInput').click()" disabled>
@@ -598,9 +617,53 @@
             '#c5cae9', // light indigo
             '#ffe0b2'  // light amber
         ];
+        let dingAudioContext = null;
 
         function deepCopy(value) {
             return JSON.parse(JSON.stringify(value));
+        }
+
+        async function playDing() {
+            try {
+                const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+                if (!AudioContextClass) return;
+                if (!dingAudioContext) {
+                    dingAudioContext = new AudioContextClass();
+                }
+                if (dingAudioContext.state === 'suspended') {
+                    await dingAudioContext.resume();
+                }
+
+                const ctx = dingAudioContext;
+                const now = ctx.currentTime;
+
+                const variants = [
+                    { freqs: [880], duration: 0.25, attack: 0.01, decay: 0.25, gain: 0.16 },
+                    { freqs: [880, 1320], delay: [0, 0.05], duration: 0.35, attack: 0.01, decay: 0.35, gain: 0.18 },
+                    { freqs: [660, 880, 1100], delay: [0, 0.03, 0.06], duration: 0.4, attack: 0.01, decay: 0.4, gain: 0.14 },
+                    { freqs: [1000], duration: 0.18, attack: 0.005, decay: 0.18, gain: 0.12 },
+                    { freqs: [740, 880], delay: [0, 0.02], duration: 0.28, attack: 0.01, decay: 0.28, gain: 0.15 }
+                ];
+
+                const pick = variants[Math.floor(Math.random() * variants.length)];
+                const gainNode = ctx.createGain();
+                gainNode.gain.setValueAtTime(0.0001, now);
+                gainNode.gain.exponentialRampToValueAtTime(pick.gain, now + pick.attack);
+                gainNode.gain.exponentialRampToValueAtTime(0.0001, now + pick.decay);
+                gainNode.connect(ctx.destination);
+
+                pick.freqs.forEach((freq, idx) => {
+                    const osc = ctx.createOscillator();
+                    osc.type = 'sine';
+                    osc.frequency.setValueAtTime(freq, now);
+                    osc.connect(gainNode);
+                    const delay = pick.delay ? pick.delay[idx] || 0 : 0;
+                    osc.start(now + delay);
+                    osc.stop(now + pick.duration + delay);
+                });
+            } catch (err) {
+                // Ignore audio errors (e.g., autoplay restrictions)
+            }
         }
 
         function escapeRegExp(text) {
@@ -1318,6 +1381,7 @@ Saved to: ${result.saved_to}` : '';
                 statusSelect.value = 'verified';
             }
 
+            playDing();
             saveChanges();
 
             setTimeout(() => {

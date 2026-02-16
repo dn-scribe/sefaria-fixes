@@ -449,6 +449,15 @@ async def read_root():
         return f.read()
 
 
+@app.get("/rn-favicon.png")
+async def get_favicon():
+    """Serve the favicon"""
+    favicon_file = Path("rn-favicon.png")
+    if not favicon_file.exists():
+        raise HTTPException(status_code=404, detail="Favicon file not found")
+    return FileResponse(favicon_file)
+
+
 @app.get("/data")
 async def get_data(username: Optional[str] = Header(None, alias="X-Username")):
     """Get the current JSON data with version info"""
