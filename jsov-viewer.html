@@ -317,6 +317,11 @@
             color: white;
         }
         
+        .status-sent {
+            background: #FF9800;
+            color: white;
+        }
+        
         .actions {
             margin-top: 30px;
             padding-top: 20px;
@@ -531,6 +536,7 @@
                     <option value="done">done</option>
                     <option value="verified">verified</option>
                     <option value="rejected">rejected</option>
+                    <option value="sent">sent</option>
                 </select>
                 <select id="filterLLMStatus" class="filter-select" onchange="updateFilters()">
                     <option value="">כל ה-LLM סטטוסים</option>
@@ -1227,7 +1233,7 @@ Saved to: ${result.saved_to}` : '';
             html += '<div class="field-group">';
             html += '<label class="field-label" style="font-weight: bold; font-size: 15px;">Status</label>';
             html += '<select class="field-value editable" data-field="Status" style="font-weight: bold;">';
-            const statusOptions = ['Pending', 'done', 'verified', 'rejected'];
+            const statusOptions = ['Pending', 'done', 'verified', 'rejected', 'sent'];
             statusOptions.forEach(opt => {
                 const selected = opt === item.Status ? 'selected' : '';
                 html += `<option value="${opt}" ${selected}>${opt}</option>`;
