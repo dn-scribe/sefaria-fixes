@@ -525,6 +525,9 @@
                 <span class="counter" id="counter">0 / 0</span>
                 <button class="btn" id="nextBtn" onclick="nextItem()">הבא ►</button>
                 <span style="color: white; margin: 0 5px;">|</span>
+                <button class="btn" id="absBackBtn" onclick="absoluteBackItem()" title="Previous (ignore user distribution)">◄◄ הקודם המוחלט</button>
+                <button class="btn" id="absNextBtn" onclick="absoluteNextItem()" title="Next (ignore user distribution)">הבא המוחלט ►►</button>
+                <span style="color: white; margin: 0 5px;">|</span>
                 <input type="number" id="gotoInput" class="goto-input" placeholder="#" min="1">
                 <button class="btn btn-goto" onclick="gotoItem()">עבור</button>
             </div>
@@ -581,6 +584,8 @@
             <button class="btn btn-verify" id="verifyBtnDesktop" onclick="verifyAndNext()">אשר + הבא</button>
             <button class="btn" id="nextBtnDesktop" onclick="nextItem()">הבא ►</button>
             <button class="btn" id="prevBtnDesktop" onclick="previousItem()">◄ הקודם</button>
+            <button class="btn" id="absNextBtnDesktop" onclick="absoluteNextItem()" title="Next (ignore user distribution)">הבא המוחלט ►►</button>
+            <button class="btn" id="absBackBtnDesktop" onclick="absoluteBackItem()" title="Previous (ignore user distribution)">◄◄ הקודם המוחלט</button>
             <button class="btn btn-save" id="saveBtnDesktop" onclick="saveChanges()">שמור</button>
         </div>
 
@@ -588,6 +593,8 @@
             <button class="btn btn-verify" id="verifyBtnSticky" onclick="verifyAndNext()">אשר + הבא</button>
             <button class="btn" id="nextBtnSticky" onclick="nextItem()">הבא ►</button>
             <button class="btn" id="prevBtnSticky" onclick="previousItem()">◄ הקודם</button>
+            <button class="btn" id="absNextBtnSticky" onclick="absoluteNextItem()" title="Next (ignore user distribution)">הבא המוחלט ►►</button>
+            <button class="btn" id="absBackBtnSticky" onclick="absoluteBackItem()" title="Previous (ignore user distribution)">◄◄ הקודם המוחלט</button>
             <button class="btn btn-save" id="saveBtnSticky" onclick="saveChanges()">שמור</button>
         </div>
         
@@ -1092,6 +1099,90 @@ Saved to: ${result.saved_to}` : '';
             }
         }
 
+        async function fetchAbsoluteNextRecord() {
+            if (!(await ensureUsername())) {
+                return;
+            }
+            if (hasChanges && !confirm('יש שינויים שלא נשמרו. האם להמשיך?')) {
+                return;
+            }
+
+            const filters = getActiveFilters();
+
+            try {
+                const params = new URLSearchParams({
+                    current_index: currentIndex === null ? -1 : currentIndex
+                });
+                if (filters.status) params.append('filter_status', filters.status);
+                if (filters.llm) params.append('filter_llm_status', filters.llm);
+
+                const response = await fetch(`/abs-next?${params}`, {
+                    headers: buildHeaders()
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+
+                const result = await response.json();
+
+                if (result.index !== null && result.index !== undefined) {
+                    if (currentIndex !== null) {
+                        historyStack.push(currentIndex);
+                    }
+                    setCurrentRecord(result.index, result.record);
+                    updateStats();
+                } else {
+                    alert(result.message || 'No more records available');
+                }
+            } catch (error) {
+                console.error('Error getting absolute next record:', error);
+                alert('Error getting absolute next record. Check console for details.');
+            }
+        }
+
+        async function fetchAbsoluteBackRecord() {
+            if (!(await ensureUsername())) {
+                return;
+            }
+            if (hasChanges && !confirm('יש שינויים שלא נשמרו. האם להמשיך?')) {
+                return;
+            }
+
+            const filters = getActiveFilters();
+
+            try {
+                const params = new URLSearchParams({
+                    current_index: currentIndex === null ? -1 : currentIndex
+                });
+                if (filters.status) params.append('filter_status', filters.status);
+                if (filters.llm) params.append('filter_llm_status', filters.llm);
+
+                const response = await fetch(`/abs-back?${params}`, {
+                    headers: buildHeaders()
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+
+                const result = await response.json();
+
+                if (result.index !== null && result.index !== undefined) {
+                    if (currentIndex !== null) {
+                        historyStack.push(currentIndex);
+                    }
+                    setCurrentRecord(result.index, result.record);
+                    updateStats();
+                } else {
+                    alert(result.message || 'No records available');
+                }
+            } catch (error) {
+                console.error('Error getting absolute back record:', error);
+                alert('Error getting absolute back record. Check console for details.');
+            }
+        }
+
         async function fetchRecordByIndex(index, { pushHistory = true } = {}) {
             if (index === null || index < 0) {
                 alert('Invalid record number');
@@ -1223,7 +1314,10 @@ Saved to: ${result.saved_to}` : '';
 
             html += `<div class="field-value large refb-display" style="white-space: pre-wrap;">${highlightedLM}</div>`;
             html += `<textarea class="field-value large editable refb-edit" data-field="LMSnippet" style="display: none;">${lmSnippetText}</textarea>`;
-            html += '<button class="btn refb-edit-btn" style="margin-top: 10px;" onclick="toggleRefBEdit()">ערוך</button>';
+            html += '<div style="display: flex; gap: 10px; margin-top: 10px;">';
+            html += '<button class="btn refb-edit-btn" onclick="toggleRefBEdit()">ערוך</button>';
+            html += '<button class="btn" onclick="reloadSnippetFromLink()" title="Reload snippet from RefBExact link">🔄 טען מחדש</button>';
+            html += '</div>';
             html += '</div>';
             html += '<div class="field-group">';
             html += '<label class="field-label">RefBExact (editable)</label>';
@@ -1258,20 +1352,30 @@ Saved to: ${result.saved_to}` : '';
                 currentIndex !== null ? `Record ${currentIndex + 1}` : '0 / 0';
             document.getElementById('prevBtn').disabled = historyStack.length === 0;
             document.getElementById('nextBtn').disabled = currentIndex === null;
+            document.getElementById('absBackBtn').disabled = currentIndex === null;
+            document.getElementById('absNextBtn').disabled = currentIndex === null;
             const prevSticky = document.getElementById('prevBtnSticky');
             const nextSticky = document.getElementById('nextBtnSticky');
+            const absBackSticky = document.getElementById('absBackBtnSticky');
+            const absNextSticky = document.getElementById('absNextBtnSticky');
             const saveSticky = document.getElementById('saveBtnSticky');
             const verifySticky = document.getElementById('verifyBtnSticky');
             const prevDesktop = document.getElementById('prevBtnDesktop');
             const nextDesktop = document.getElementById('nextBtnDesktop');
+            const absBackDesktop = document.getElementById('absBackBtnDesktop');
+            const absNextDesktop = document.getElementById('absNextBtnDesktop');
             const saveDesktop = document.getElementById('saveBtnDesktop');
             const verifyDesktop = document.getElementById('verifyBtnDesktop');
             if (prevSticky) prevSticky.disabled = historyStack.length === 0;
             if (nextSticky) nextSticky.disabled = currentIndex === null;
+            if (absBackSticky) absBackSticky.disabled = currentIndex === null;
+            if (absNextSticky) absNextSticky.disabled = currentIndex === null;
             if (saveSticky) saveSticky.disabled = currentIndex === null;
             if (verifySticky) verifySticky.disabled = currentIndex === null;
             if (prevDesktop) prevDesktop.disabled = historyStack.length === 0;
             if (nextDesktop) nextDesktop.disabled = currentIndex === null;
+            if (absBackDesktop) absBackDesktop.disabled = currentIndex === null;
+            if (absNextDesktop) absNextDesktop.disabled = currentIndex === null;
             if (saveDesktop) saveDesktop.disabled = currentIndex === null;
             if (verifyDesktop) verifyDesktop.disabled = currentIndex === null;
         }
@@ -1325,6 +1429,14 @@ Saved to: ${result.saved_to}` : '';
 
         async function nextItem() {
             await fetchNextRecord();
+        }
+
+        async function absoluteNextItem() {
+            await fetchAbsoluteNextRecord();
+        }
+
+        async function absoluteBackItem() {
+            await fetchAbsoluteBackRecord();
         }
 
         function saveChanges() {
@@ -1415,6 +1527,63 @@ Saved to: ${result.saved_to}` : '';
             }
         }
 
+        function reloadSnippetFromLink() {
+            if (!currentRecord) {
+                alert('No record selected');
+                return;
+            }
+
+            const refBExactInput = document.querySelector('input[data-field="RefBExact"]');
+            if (!refBExactInput || !refBExactInput.value.trim()) {
+                alert('No RefBExact reference found to reload from');
+                return;
+            }
+
+            const ref = refBExactInput.value.trim();
+            console.log('Reloading snippet for reference:', ref);
+
+            // Fetch the snippet from the server
+            fetch(`/paragraph/${encodeURIComponent(ref)}`)
+                .then(response => response.json())
+                .then(result => {
+                    if (result.text) {
+                        // Update the UI elements
+                        const refbDisplay = document.querySelector('.refb-display');
+                        const refbEdit = document.querySelector('.refb-edit');
+                        const refbEditBtn = document.querySelector('.refb-edit-btn');
+
+                        if (refbDisplay && refbEdit) {
+                            // Update the textarea value
+                            refbEdit.value = result.text;
+
+                            // Highlight matched words in the snippet
+                            let matchedWords = (currentRecord?.MatchedWords || '').split(' ').filter(w => w.trim());
+                            let highlightedText = highlightMatchedWords(result.text, matchedWords);
+
+                            // Update display area
+                            refbDisplay.innerHTML = highlightedText;
+
+                            // Ensure display mode is visible
+                            refbDisplay.style.display = 'block';
+                            refbEdit.style.display = 'none';
+                            if (refbEditBtn) refbEditBtn.textContent = 'ערוך';
+
+                            hasChanges = true;
+                        }
+
+                        console.log('✓ Snippet reloaded successfully');
+                        showSaveIndicator('✓ Snippet reloaded', 'success', 1500);
+                    } else {
+                        console.warn('No text found for reference:', ref);
+                        alert('No text found for this reference');
+                    }
+                })
+                .catch(error => {
+                    console.error('Error reloading snippet:', error);
+                    alert('Error reloading snippet: ' + error.message);
+                });
+        }
+
         function updateRefBExactLink(input) {
             const newValue = input.value.trim();
 
@@ -1489,8 +1658,8 @@ Saved to: ${result.saved_to}` : '';
                         // Mark that we have unsaved changes
                         hasChanges = true;
 
-                        // Fetch the LM snippet from the server
-                        fetch(`/lm-paragraph/${encodeURIComponent(ref)}`)
+                        // Fetch the snippet from the server (now supports multiple books)
+                        fetch(`/paragraph/${encodeURIComponent(ref)}`)
                             .then(response => response.json())
                             .then(result => {
                                 if (result.text) {
@@ -1516,7 +1685,7 @@ Saved to: ${result.saved_to}` : '';
                                         if (refbEditBtn) refbEditBtn.textContent = 'ערוך';
                                     }
 
-                                    console.log('✓ Fetched and updated LMSnippet');
+                                    console.log('✓ Fetched and updated snippet');
                                 } else {
                                     console.warn('No text found for reference:', ref);
                                     const refbEdit = document.querySelector('.refb-edit');

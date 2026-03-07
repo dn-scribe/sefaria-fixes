@@ -527,6 +527,131 @@ async def get_next_record(
     return result
 
 
+@app.get("/abs-next")
+async def get_absolute_next_record(
+    username: Optional[str] = Header(None, alias="X-Username"),
+    session_id: Optional[str] = Header(None, alias="X-Session-Id"),
+    current_index: Optional[int] = None,
+    filter_status: Optional[str] = None,
+    filter_llm_status: Optional[str] = None
+):
+    """Get the next record according to filters, ignoring user distribution"""
+    if not username:
+        raise HTTPException(status_code=400, detail="Username header required")
+    if not session_id:
+        raise HTTPException(status_code=400, detail="Session ID header required")
+    
+    if not data_manager:
+        raise HTTPException(status_code=500, detail="Data manager not initialized")
+    
+    logger.info(f"🔍 /abs-next called by {username}, current_index={current_index}, filters: status={filter_status}, llm={filter_llm_status}")
+    
+    async with data_manager.lock:
+        # Update user activity
+        data_manager.user_activity[username] = datetime.now()
+        data_manager.session_activity[session_id] = datetime.now()
+        data_manager.session_user[session_id] = username
+        data_manager._cleanup_stale_sessions()
+        
+        # Start searching from current_index + 1, or 0 if not provided
+        start_index = (current_index + 1) if current_index is not None else 0
+        
+        # Search for next matching record (ignore user occupancy)
+        for offset in range(len(data_manager.in_memory_data)):
+            idx = (start_index + offset) % len(data_manager.in_memory_data)
+            record = data_manager.in_memory_data[idx]
+            
+            # Apply filters
+            if filter_status and record.get("Status") != filter_status:
+                continue
+            
+            if filter_llm_status and record.get("LLMStatus") != filter_llm_status:
+                continue
+            
+            # Found a match - mark as in use
+            data_manager.session_current_record[session_id] = idx
+            
+            logger.info(f"📍 Session {session_id} (user {username}) moved to record {idx} (absolute navigation)")
+            
+            return {
+                "index": idx,
+                "record": record,
+                "active_users": list(data_manager.user_activity.keys())
+            }
+        
+        # No matching record found
+        return {
+            "index": None,
+            "record": None,
+            "active_users": list(data_manager.user_activity.keys()),
+            "message": "No records matching filters"
+        }
+
+
+@app.get("/abs-back")
+async def get_absolute_previous_record(
+    username: Optional[str] = Header(None, alias="X-Username"),
+    session_id: Optional[str] = Header(None, alias="X-Session-Id"),
+    current_index: Optional[int] = None,
+    filter_status: Optional[str] = None,
+    filter_llm_status: Optional[str] = None
+):
+    """Get the previous record according to filters, ignoring user distribution"""
+    if not username:
+        raise HTTPException(status_code=400, detail="Username header required")
+    if not session_id:
+        raise HTTPException(status_code=400, detail="Session ID header required")
+    
+    if not data_manager:
+        raise HTTPException(status_code=500, detail="Data manager not initialized")
+    
+    logger.info(f"🔍 /abs-back called by {username}, current_index={current_index}, filters: status={filter_status}, llm={filter_llm_status}")
+    
+    async with data_manager.lock:
+        # Update user activity
+        data_manager.user_activity[username] = datetime.now()
+        data_manager.session_activity[session_id] = datetime.now()
+        data_manager.session_user[session_id] = username
+        data_manager._cleanup_stale_sessions()
+        
+        # If no current index, start from the end
+        if current_index is None or current_index <= 0:
+            start_index = len(data_manager.in_memory_data) - 1
+        else:
+            start_index = current_index - 1
+        
+        # Search backwards for previous matching record (ignore user occupancy)
+        for offset in range(len(data_manager.in_memory_data)):
+            idx = (start_index - offset) % len(data_manager.in_memory_data)
+            record = data_manager.in_memory_data[idx]
+            
+            # Apply filters
+            if filter_status and record.get("Status") != filter_status:
+                continue
+            
+            if filter_llm_status and record.get("LLMStatus") != filter_llm_status:
+                continue
+            
+            # Found a match - mark as in use
+            data_manager.session_current_record[session_id] = idx
+            
+            logger.info(f"📍 Session {session_id} (user {username}) moved to record {idx} (absolute back navigation)")
+            
+            return {
+                "index": idx,
+                "record": record,
+                "active_users": list(data_manager.user_activity.keys())
+            }
+        
+        # No matching record found
+        return {
+            "index": None,
+            "record": None,
+            "active_users": list(data_manager.user_activity.keys()),
+            "message": "No records matching filters"
+        }
+
+
 @app.get("/record")
 async def get_record(
     index: int,
@@ -761,19 +886,10 @@ async def health_check():
     }
 
 
-@app.get("/lm-paragraph/{ref_path:path}")
-async def get_lm_paragraph(ref_path: str):
-    """Get Likutei Moharan paragraph text from reference path"""
+@app.get("/paragraph/{ref_path:path}")
+async def get_paragraph(ref_path: str):
+    """Get paragraph text from reference path - supports multiple books"""
     try:
-        # Load LM JSON from app's data/ folder (constants, not user data)
-        lm_file = Path("data") / "Likutei_Moharan_refs.json"
-        if not lm_file.exists():
-            raise HTTPException(status_code=404, detail=f"Likutei Moharan JSON not found at {lm_file.absolute()}")
-        
-        with open(lm_file, 'r', encoding='utf-8') as f:
-            lm_data = json.load(f)
-        
-        # Parse the reference path (e.g., "Likutei Moharan.61.1.3" or "Likutei Moharan%2C_Part_II.23.1.5")
         # Decode URL encoding
         ref_path = ref_path.replace('%2C_', ', ')
         # Replace underscores with spaces in the book name (first part before the first dot)
@@ -782,11 +898,50 @@ async def get_lm_paragraph(ref_path: str):
         if parts:
             parts[0] = parts[0].replace('_', ' ')
         
-        logger.info(f"📖 Looking up reference: original={ref_path}, parts={parts}")
-        logger.info(f"   Available top-level keys: {list(lm_data.keys())}")
+        book_name = parts[0] if parts else ""
+        
+        # Special handling for "Likutei Moharan, Part II" - need to split the navigation
+        if book_name == "Likutei Moharan, Part II":
+            # For Part II, we navigate to ["Likutei Moharan"]["Part II"] instead of ["Likutei Moharan, Part II"]
+            # Change the parts to start with "Likutei Moharan", then "Part II"
+            parts = ["Likutei Moharan", "Part II"] + parts[1:]
+            book_name = "Likutei Moharan"  # Use the main book for file lookup
+        
+        logger.info(f"📖 Looking up reference: original={ref_path}, parts={parts}, book={book_name}")
+        
+        # Map book names to data files
+        book_file_map = {
+            "Likutei Moharan": "Likutei_Moharan_refs.json",
+            "Likutei Moharan, Part II": "Likutei_Moharan_refs.json",  # Part II is in the same file
+            "Likutey Moharan": "Likutey_Moharan_refs.json", 
+            "Chayei Moharan": "Chayei_Moharan.json",
+            "Likutei Halakhot": "Likutei_Halakhot_refs.json",
+        }
+        
+        # Find the appropriate file
+        data_file = None
+        for book_key, filename in book_file_map.items():
+            if book_name.startswith(book_key) or book_key in book_name:
+                data_file = Path("data") / filename
+                if data_file.exists():
+                    logger.info(f"   Matched book: '{book_name}' -> '{book_key}', using file: {filename}")
+                    break
+        
+        if data_file is None or not data_file.exists():
+            # Default to Likutei Moharan if no match found
+            data_file = Path("data") / "Likutei_Moharan_refs.json"
+            logger.warning(f"   Book '{book_name}' not found in map, defaulting to Likutei_Moharan_refs.json")
+        
+        if not data_file.exists():
+            raise HTTPException(status_code=404, detail=f"Data file not found: {data_file.absolute()}")
+        
+        with open(data_file, 'r', encoding='utf-8') as f:
+            book_data = json.load(f)
+        
+        logger.info(f"   Available top-level keys: {list(book_data.keys())[:5]}")
         
         # Navigate through the JSON structure
-        current = lm_data
+        current = book_data
         for i, part in enumerate(parts):
             logger.info(f"   Step {i}: navigating with part='{part}', current type={type(current).__name__}")
             if isinstance(current, dict):
@@ -819,6 +974,12 @@ async def get_lm_paragraph(ref_path: str):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching paragraph: {str(e)}")
+
+
+@app.get("/lm-paragraph/{ref_path:path}")
+async def get_lm_paragraph(ref_path: str):
+    """Get Likutei Moharan paragraph text from reference path - LEGACY endpoint for backwards compatibility"""
+    return await get_paragraph(ref_path)
 
 
 if __name__ == "__main__":
