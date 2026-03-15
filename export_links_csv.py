@@ -44,6 +44,7 @@ def load_json_data(file_path: str) -> List[Dict[str, Any]]:
 def export_to_csv(data: List[Dict[str, Any]], output_file: str, export_all: bool = False) -> int:
     """Export data to CSV format and return number of records exported."""
     csv_headers = [
+        'ID',
         'RefAExact', 
         'RefA Snippet', 
         'RefBExact', 
@@ -86,9 +87,11 @@ def export_to_csv(data: List[Dict[str, Any]], output_file: str, export_all: bool
                     ref_b_link = record['RefBExactLink']
                 
                 status = record.get('Status', 'Pending')
+                record_id = record.get('ID', '') 
                 
                 # Write row to CSV
                 writer.writerow([
+                    record_id,
                     ref_a_exact,
                     ref_a_snippet, 
                     ref_b_exact,

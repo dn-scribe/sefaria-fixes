@@ -1356,8 +1356,9 @@ Saved to: ${result.saved_to}` : '';
         }
 
         function updateNavigation() {
+            const recordId = currentRecord && currentRecord.ID ? currentRecord.ID : (currentIndex !== null ? currentIndex + 1 : null);
             document.getElementById('counter').textContent =
-                currentIndex !== null ? `Record ${currentIndex + 1}` : '0 / 0';
+                currentIndex !== null ? `Record ${recordId}` : '0 / 0';
             document.getElementById('prevBtn').disabled = historyStack.length === 0;
             document.getElementById('nextBtn').disabled = currentIndex === null;
             document.getElementById('absBackBtn').disabled = currentIndex === null;
