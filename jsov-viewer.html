@@ -1254,6 +1254,14 @@ Saved to: ${result.saved_to}` : '';
             html += `<strong>Type:</strong> ${item.MatchType} | `;
             html += `<strong>Score:</strong> ${item.DeterministicScore} | `;
             html += `<strong>Matched:</strong> ${item.MatchedWords}`;
+            
+            // Add LLM Status and Record Status if available
+            if (item.LLMStatus) {
+                html += ` | <strong>LLM Status:</strong> ${item.LLMStatus}`;
+            }
+            if (item.Status) {
+                html += ` | <strong>Status:</strong> ${item.Status}`;
+            }
             html += '</div>';
 
             // Two column layout for RefA/RefB content
