@@ -242,6 +242,22 @@
             max-height: 320px;
             overflow: auto;
         }
+
+        .sefaria-search-input {
+            flex: 1;
+            padding: 6px 10px;
+            border: 2px solid #2196F3;
+            border-radius: 4px;
+            font-size: 14px;
+            font-family: inherit;
+            direction: rtl;
+        }
+
+        .sefaria-search-input:focus {
+            outline: none;
+            border-color: #1565C0;
+            box-shadow: 0 0 0 2px rgba(33, 150, 243, 0.2);
+        }
         
         .field-value.editable {
             background: white;
@@ -677,6 +693,20 @@
             } catch (err) {
                 // Ignore audio errors (e.g., autoplay restrictions)
             }
+        }
+
+        function handleSefariaSearch(event) {
+            if (event.key !== 'Enter') return;
+            const query = event.target.value.trim();
+            if (!query) return;
+            const params = new URLSearchParams({
+                q: query,
+                tab: 'text',
+                tpathFilters: 'Chasidut/Breslov/Likutei Moharan',
+                tvar: '1',
+                tsort: 'relevance'
+            });
+            window.open('https://www.sefaria.org.il/search?' + params.toString(), '_blank');
         }
 
         function escapeRegExp(text) {
@@ -1269,6 +1299,10 @@ Saved to: ${result.saved_to}` : '';
 
             // Left column - RefA content
             html += '<div class="column">';
+            html += '<div class="field-group">';
+            html += '<label class="field-label">חיפוש בלקוטי מוהרן</label>';
+            html += `<input type="text" class="sefaria-search-input" placeholder="הקלד מילים ולחץ Enter..." onkeydown="handleSefariaSearch(event)">`;
+            html += '</div>';
             html += '<div class="field-group">';
             html += '<label class="field-label">Snippet (Likutei Halakhot)</label>';
 
