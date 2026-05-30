@@ -1304,6 +1304,10 @@ Saved to: ${result.saved_to}` : '';
             html += `<input type="text" class="sefaria-search-input" placeholder="הקלד מילים ולחץ Enter..." onkeydown="handleSefariaSearch(event)">`;
             html += '</div>';
             html += '<div class="field-group">';
+            html += '<label class="field-label">הערה</label>';
+            html += `<textarea class="field-value editable" data-field="Comment" rows="2" placeholder="הוסף הערה...">${(item.Comment || '').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</textarea>`;
+            html += '</div>';
+            html += '<div class="field-group">';
             html += '<label class="field-label">Snippet (Likutei Halakhot)</label>';
 
             // Highlight matched words in the snippet

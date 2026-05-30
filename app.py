@@ -42,7 +42,8 @@ ADMIN_USER = os.getenv("ADMIN_USER", "danny")
 PORT = int(os.getenv("PORT", "7860"))
 
 # Batch save configuration
-SAVE_THRESHOLD_MODIFICATIONS = int(os.getenv("SAVE_THRESHOLD_MODIFICATIONS", "3"))
+SAVE_THRESHOLD_MODIFICATIONS = int(os.getenv("SAVE_THRESHOLD_MODIFICATIONS", "1"))
+PERIODIC_SAVE_INTERVAL = int(os.getenv("PERIODIC_SAVE_INTERVAL", "60"))  # seconds
 
 # Global data manager instance
 data_manager = None
@@ -421,13 +422,23 @@ class DataManager:
         }
 
 
+async def _periodic_save_task():
+    """Background task: save to disk every PERIODIC_SAVE_INTERVAL seconds if there are unsaved changes."""
+    while True:
+        await asyncio.sleep(PERIODIC_SAVE_INTERVAL)
+        if data_manager and data_manager.modification_count > 0:
+            logger.info(f"⏱️ Periodic save triggered ({data_manager.modification_count} unsaved modifications)")
+            await data_manager.force_save()
+
+
 @app.on_event("startup")
 async def startup_event():
     """Initialize data manager"""
     global data_manager
     data_manager = DataManager()
     await data_manager.initialize()
-    logger.info(f"🚀 Auto-save enabled (saves every {SAVE_THRESHOLD_MODIFICATIONS} modifications)")
+    logger.info(f"🚀 Auto-save enabled (saves every {SAVE_THRESHOLD_MODIFICATIONS} modifications, periodic every {PERIODIC_SAVE_INTERVAL}s)")
+    asyncio.create_task(_periodic_save_task())
 
 
 @app.on_event("shutdown")
