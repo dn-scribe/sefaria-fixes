@@ -3,8 +3,8 @@ FastAPI application for JSON Link Viewer & Editor
 Supports multi-user concurrent editing with conflict detection
 Features: In-memory data management, batch saving, real-time statistics
 """
-from fastapi import FastAPI, HTTPException, Request, Header, UploadFile, File, BackgroundTasks
-from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
+from fastapi import FastAPI, HTTPException, Request, Header, UploadFile, File, BackgroundTasks, Query
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pathlib import Path
@@ -12,11 +12,15 @@ import json
 import os
 import logging
 from datetime import datetime, timedelta
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Set, Tuple
 import asyncio
 from filelock import FileLock
 import hashlib
 from collections import defaultdict, Counter
+import csv
+import io
+import re
+import urllib.parse
 
 # Configure logging with immediate flushing for Cloud Run
 import sys
@@ -866,6 +870,134 @@ async def download_file(
     response.headers["X-File-Path"] = str(DATA_FILE.absolute())
     response.headers["X-Unsaved-Changes"] = str(data_info["unsaved_changes"])
     return response
+
+
+def _normalize_ref(ref: str) -> str:
+    """Convert URL-encoded ref to human-readable form."""
+    decoded = urllib.parse.unquote(ref).replace('_', ' ')
+    parts = decoded.split('.')
+    text_parts: List[str] = []
+    num_parts: List[str] = []
+    collecting_nums = False
+    for p in parts:
+        if re.match(r'^\d+$', p):
+            collecting_nums = True
+        if collecting_nums:
+            num_parts.append(p)
+        else:
+            text_parts.append(p)
+    text = '.'.join(text_parts)
+    if num_parts:
+        return text + ' ' + ':'.join(num_parts)
+    return text
+
+
+def _short_snippet(snippet: str, matched_words: str, window: int = 18) -> str:
+    """Return ±window words around tightest cluster of matched words."""
+    if not snippet:
+        return ''
+    words = snippet.split()
+    if len(words) <= window * 2:
+        return snippet
+    if not matched_words:
+        result = ' '.join(words[:window])
+        if len(words) > window:
+            result += '...'
+        return result
+    match_list = matched_words.split()
+    all_positions: List[int] = []
+    for mw in match_list:
+        clean_mw = re.sub(r'[^\w]', '', mw)
+        if not clean_mw:
+            continue
+        for i, w in enumerate(words):
+            clean_w = re.sub(r'[^\w]', '', w)
+            if clean_mw in clean_w or clean_w in clean_mw:
+                all_positions.append(i)
+    if not all_positions:
+        result = ' '.join(words[:window])
+        if len(words) > window:
+            result += '...'
+        return result
+    all_positions.sort()
+    n = len(match_list)
+    best_center = all_positions[0]
+    best_span = float('inf')
+    for i in range(len(all_positions) - n + 1):
+        span = all_positions[min(i + n - 1, len(all_positions) - 1)] - all_positions[i]
+        if span < best_span:
+            best_span = span
+            best_center = (all_positions[i] + all_positions[min(i + n - 1, len(all_positions) - 1)]) // 2
+    start = max(0, best_center - window)
+    end = min(len(words), best_center + window + 1)
+    result = ' '.join(words[start:end])
+    if start > 0:
+        result = '...' + result
+    if end < len(words):
+        result = result + '...'
+    return result
+
+
+@app.get("/export-csv")
+async def export_csv(
+    from_record: int = Query(1, alias="from", ge=1),
+    to_record: int = Query(..., alias="to", ge=1),
+    username: Optional[str] = Header(None, alias="X-Username"),
+):
+    """Export a range of records as CSV. from/to are 1-based record positions."""
+    if not data_manager:
+        raise HTTPException(status_code=500, detail="Data manager not initialized")
+
+    data_info = await data_manager.get_data(username)
+    all_data = data_info["data"]
+    total = len(all_data)
+
+    from_idx = max(0, from_record - 1)
+    to_idx = min(total, to_record)  # exclusive upper bound
+
+    if from_idx >= to_idx:
+        raise HTTPException(status_code=400, detail=f"Invalid range: from={from_record} to={to_record} (total={total})")
+
+    records = all_data[from_idx:to_idx]
+
+    csv_headers = ['Record #', 'ID', 'RefAExact', 'RefA Snippet', 'RefBExact', 'RefB Snippet',
+                   'RefALink', 'RefBLink', 'Status', 'Comment']
+
+    output = io.StringIO()
+    writer = csv.writer(output, quoting=csv.QUOTE_ALL)
+    writer.writerow(csv_headers)
+
+    seen_pairs: Set[Tuple[str, str]] = set()
+    for rec_offset, record in enumerate(records):
+        ref_a_raw = record.get('RefAExact') or record.get('RefA', '')
+        ref_b_raw = record.get('RefBExact') or record.get('RefB', '')
+        ref_a_norm = _normalize_ref(ref_a_raw)
+        ref_b_norm = _normalize_ref(ref_b_raw)
+
+        pair_key = (ref_a_norm, ref_b_norm)
+        if pair_key in seen_pairs:
+            continue
+        seen_pairs.add(pair_key)
+
+        ref_a_snippet = _short_snippet(record.get('LHSnippet', ''), record.get('MatchedWords', ''))
+        ref_b_snippet = record.get('LMSnippet', '')
+        ref_a_link = record.get('RefAExactLink') or record.get('RefALink', '')
+        ref_b_link = record.get('RefBExactLink') or record.get('RefBLink', '')
+        status = record.get('Status', 'Pending')
+        record_id = record.get('ID', '')
+        comment = record.get('Comment', '')
+
+        record_num = from_idx + rec_offset + 1
+        writer.writerow([record_num, record_id, ref_a_norm, ref_a_snippet, ref_b_norm, ref_b_snippet,
+                         ref_a_link, ref_b_link, status, comment])
+
+    csv_content = output.getvalue()
+    filename = f"links_from_{from_record}_to_{to_record}.csv"
+    return StreamingResponse(
+        iter([csv_content]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
 
 
 @app.get("/health")

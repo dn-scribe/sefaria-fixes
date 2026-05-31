@@ -547,6 +547,14 @@
                 <input type="number" id="gotoInput" class="goto-input" placeholder="#" min="1">
                 <button class="btn btn-goto" onclick="gotoItem()">עבור</button>
             </div>
+            <div class="filter-section" style="margin-bottom: 8px;">
+                <span class="filter-label">ייצוא CSV:</span>
+                <span style="color: white; font-size: 13px;">מרשומה</span>
+                <input type="number" id="csvFromInput" min="1" value="1" style="width:70px; padding:4px 8px; border:2px solid white; border-radius:4px; font-size:13px; text-align:center;">
+                <span style="color: white; font-size: 13px;">עד רשומה</span>
+                <input type="number" id="csvToInput" min="1" style="width:70px; padding:4px 8px; border:2px solid white; border-radius:4px; font-size:13px; text-align:center;">
+                <button class="btn" onclick="downloadCSV()" style="padding: 6px 14px; font-size: 13px;">📥 הורד CSV</button>
+            </div>
             <div class="filter-section">
                 <span class="filter-label">סינון:</span>
                 <select id="filterStatus" class="filter-select" onchange="updateFilters()">
@@ -692,6 +700,34 @@
                 });
             } catch (err) {
                 // Ignore audio errors (e.g., autoplay restrictions)
+            }
+        }
+
+        async function downloadCSV() {
+            const fromVal = parseInt(document.getElementById('csvFromInput').value, 10);
+            const toVal = parseInt(document.getElementById('csvToInput').value, 10);
+            if (isNaN(fromVal) || isNaN(toVal) || fromVal < 1 || toVal < fromVal) {
+                alert('נא להזין טווח תקין (מ ≤ עד)');
+                return;
+            }
+            try {
+                const url = `/export-csv?from=${fromVal}&to=${toVal}`;
+                const response = await fetch(url, { headers: buildHeaders() });
+                if (!response.ok) {
+                    const err = await response.json().catch(() => ({}));
+                    alert('שגיאה: ' + (err.detail || response.status));
+                    return;
+                }
+                const blob = await response.blob();
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(blob);
+                a.download = `links_from_${fromVal}_to_${toVal}.csv`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(a.href);
+            } catch (e) {
+                alert('שגיאה בהורדה: ' + e.message);
             }
         }
 
