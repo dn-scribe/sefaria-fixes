@@ -103,6 +103,23 @@ Each item is expected to include:
 - `tmp_lh_links.json` - Primary dataset
 - `data/` - Auxiliary reference data
 
+## Utility Scripts
+
+### `pull_structured_book.py`
+Downloads a book's full text from the Sefaria API into `data/<book>_structure.json` (raw schema) and `data/<book>_refs.json` (nested text keyed by chapter/section, following the book's own schema). Works for both simple and complex/hierarchical Sefaria texts.
+
+```bash
+python pull_structured_book.py "What is the Talmud" --language he --with-nikud
+```
+
+### `book_to_pdf.py`
+Renders a book downloaded with `pull_structured_book.py` into a print-ready A4 PDF (RTL, Hebrew font, page numbers). Each top-level chapter starts on a new page, so the output can be imposed as a booklet directly from Acrobat's Print > Booklet option.
+
+```bash
+python book_to_pdf.py "What is the Talmud" --output "What_is_the_Talmud.pdf"
+```
+Requires `weasyprint` (not in `requirements.txt`, since it's only needed for this one-off script).
+
 ## Hugging Face Deployment
 
 This repository is configured for Hugging Face Spaces (Docker).

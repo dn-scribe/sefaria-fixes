@@ -1,6 +1,7 @@
 import requests
 import json
 import re
+from urllib.parse import quote
 
 class SefariaBookStructure:
     def save_structure_json(self, filename):
@@ -51,7 +52,8 @@ class SefariaBookStructure:
                 print(f"  [LIMIT] Reached max API calls ({max_refs}). Skipping: {ref}")
                 return None
             
-            url = f"https://www.sefaria.org/api/texts/{ref.replace(' ', '_')}?context=0"
+            encoded_ref = quote(ref.replace(' ', '_'), safe="%")
+            url = f"https://www.sefaria.org/api/texts/{encoded_ref}?context=0"
             print(f"  [API {api_call_count[0] + 1}/{max_refs if max_refs else '∞'}] Fetching: {url}")
             api_call_count[0] += 1
             try:
@@ -127,8 +129,10 @@ class SefariaBookStructure:
                 return
             
             next_ref_path = ref_path
-            if node.get("title"):
-                next_ref_path = ref_path + [node["title"]]
+            if not node.get("default"):
+                node_title = node.get("title") or node.get("key")
+                if node_title:
+                    next_ref_path = ref_path + [node_title]
 
             section_names = node.get("sectionNames") or parent_section_names or []
 
